@@ -1,0 +1,1691 @@
+import React, { useRef, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { useDispatch, useSelector } from "react-redux";
+import { Button } from "primereact/button";
+import { CheckboxChangeEvent } from "primereact/checkbox";
+import { Dropdown, DropdownChangeEvent } from "primereact/dropdown";
+import { RootState } from "../../store/store";
+import FeatherIcon from "../common/FeatherIconComponent";
+import MemberRequestSteps from "./MemberRequestSteps";
+import "./CircularProgressBar.scss";
+
+import {
+  deleteData,
+  fetchData,
+  postData,
+  putData,
+} from "../../services/apiService";
+import Input from "../../utils/Input";
+import { useLanguageContext } from "../LanguageContext";
+import { createMemberRequest } from "../../slices/createMemberRequestSlice";
+import { formatCreateMemberData } from "./createApiData";
+import useCommitteesData from "./useCommitteesData";
+import { useTranslation } from "react-i18next";
+import { Toast } from "primereact/toast";
+import CustomBreadcrumb from "../common/CustomBreadcrumb";
+import { focusOnErrorField } from "../../utils/focusError";
+import pdfIcon from "../../assets/icons/fileIcon.svg";
+import { BlobServiceClient } from "@azure/storage-blob";
+import RequestListDocument from "../common/RequestListDocument";
+import withLoader from "../common/LoaderIntercepter";
+import RecordListDocument from "../common/RecordListDocument";
+import LoadingOverlay from "../common/LoadingOverlay";
+import ConfirmDialogComponent from "../common/ConfirmDialogComponent";
+import useUserRolePermissions from "../../hooks/useUserRolePermissions";
+import { InputText } from "primereact/inputtext";
+interface Option {
+  name: string;
+  code: string;
+}
+
+type DropdownOption = {
+  label: string;
+  value: string;
+};
+
+interface MembershipRequest {
+  Id?: "";
+  isDirty: boolean;
+  isNew: boolean;
+  committeeId: string | undefined | null;
+  membershipStatusId: string;
+  membershipPositionId: string;
+  categoryOfInterestId: string;
+  remark: string;
+  represents: string;
+  statusId: string;
+  openPositionId: string | null;
+  isAgreeToTermandCondition: true;
+  isAgreeToConfidentialityAgreement: true;
+  memberName: string;
+  AlternateMemberUserProfileId?: string;
+  isMemberReappoinmentRequest?: boolean;
+  isMemberReappointmentRecord?: boolean;
+}
+
+const MembershipDetails: React.FC = () => {
+  const [loading, setLoading] = useState(false);
+  const toast = useRef<any>(null);
+  const location = useLocation();
+  const rowData = location.state?.rowData as any | undefined;
+  const newData = location.state?.newData as any | undefined;
+
+  const navigate = useNavigate();
+  const [t, i18n] = useTranslation("member");
+  const { selectedLanguage } = useLanguageContext();
+  const performAction = () => {
+    i18n.changeLanguage(selectedLanguage);
+  };
+  const selectedDocumentId = useSelector(
+    (state: RootState) => state.document.selectedDocumentId
+  );
+  const [alternetMemberFor, setAlternetMemberFor] = useState(false);
+  React.useEffect(() => {
+    performAction();
+  }, [selectedLanguage]);
+
+  const [request, setRequest] = useState<MembershipRequest>({
+    Id: "",
+    isDirty: true,
+    isNew: true,
+    committeeId: "",
+    membershipStatusId: "",
+    membershipPositionId: "",
+    categoryOfInterestId: "",
+    remark: "",
+    represents: "",
+    statusId: "",
+    openPositionId: "",
+    isAgreeToTermandCondition: true,
+    isAgreeToConfidentialityAgreement: true,
+    memberName: "",
+    AlternateMemberUserProfileId: "",
+    isMemberReappoinmentRequest: false,
+    isMemberReappointmentRecord: false,
+  });
+  const [memberShipData, setMemberShipData] = useState<any>(null);
+  const [documentDetails, setDocumentDetails] = useState<any>(null);
+  const [CategoryOfInterest, setCategoryOfInterest] = useState<
+    DropdownOption[]
+  >([]);
+  const [defaultCOIOptions, setDefaultCOIOptions] = React.useState<
+    DropdownOption[]
+  >([]);
+  const [MemberShipPosition, setMemberShipPosition] = useState<
+    DropdownOption[]
+  >([]);
+  const [userProfileId, setUserProfileId] = useState<string>("");
+  const [membershipRequestId, setMembershipRequestId] = useState<any>(null);
+  const [membershipRecordId, setMembershipRecordId] = useState<any>(null);
+
+  const [blobUrl, setBlobUrl] = useState<string | undefined>(undefined);
+  const [isAlternateMemberSelected, setIsAlternateMemberSelected] =
+    useState(false);
+  const [editMode, setEditMode] = useState<boolean>(false);
+  const [alternetMemberOptions, setAlternetMemberOptions] = useState<
+    DropdownOption[]
+  >([]);
+  const [saveAsDraftClicked, setSaveAsDraftClicked] = useState(false); // State variable to track if "Save as Draft" button was clicked
+  const dispatch = useDispatch();
+
+  const createCommitteeData = useSelector(
+    (state: RootState) => state.createMemberRequest
+  );
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | undefined>(
+    undefined
+  );
+  const [errorEvidenceMessage, setErrorEvidenceMessage] = useState<
+    string | undefined
+  >(undefined);
+  const [file, setFile] = useState<any | undefined>(undefined);
+  const [fileEvidence, setFileEvidence] = useState<File[]>([]);
+  const [userDocumentTypeId, setUserDocumentTypeId] = useState<
+    string | undefined
+  >(undefined);
+  const [requestDocumentTypeId, setRequestDocumentTypeId] = useState<
+    string | undefined
+  >(undefined);
+  const [evidenceDocumentTypeId, setEvidenceDocumentTypeId] = useState<
+    string | undefined
+  >(undefined);
+  const reappointmentUserProfileId = sessionStorage.getItem(
+    "reappointmentUserProfileId"
+  );
+  const Reappointment = sessionStorage.getItem("reappointment");
+  const storedData = sessionStorage.getItem("committeeId");
+  const [fileKey, setFileKey] = useState(0); // Key for file input
+  const [evidenceKey, setEvidenceKey] = useState(0); // Key for evidence input
+  let parsedData;
+  if (storedData) {
+    try {
+      // Attempt to parse the stored data as JSON
+      parsedData = JSON.parse(storedData);
+    } catch (error) {
+      // If parsing fails, assume it's a string
+      parsedData = storedData;
+    }
+  } else {
+    // If no data is found, initialize parsedData as an empty object
+    parsedData = {};
+  }
+
+  const committeeId =
+    parsedData.committeeId || createCommitteeData.data?.committeeId;
+  const committeeDetails = useCommitteesData(committeeId || "");
+  const breadcumbItems = [
+    { label: t("member.dashboard"), url: "/dashboard" },
+    {
+      label: Reappointment
+        ? t("member.reappointmentHeading")
+        : t("member.membershipRequest"),
+    },
+  ];
+  const [categoryError, setCategoryError] = useState<string>(""); // State variable for category of interest validation error
+  const [positionError, setPositionError] = useState<string>(""); // State variable for membership position validation error
+
+  const [evidenceError, setEvidenceError] = useState<string>("");
+  const [alternetMemberError, setAlternetMemberError] = useState<string>("");
+  const [checked, setChecked] = useState<boolean>(false);
+  const { hasAccess } = useUserRolePermissions()
+  const handleCheckboxChange = (e: CheckboxChangeEvent) => {
+    if (e.checked !== undefined) {
+      setChecked(e.checked);
+    }
+  };
+
+  const percent = 70; // Set your percentage here
+
+  // Define the style object as a regular JavaScript object
+  const circleStyle = {
+    "--percent": `${percent}`, // Set the percentage as a custom CSS variable
+  };
+
+ React.useEffect(() => {
+    const fetchDataForMemberShipPosition = async () => {
+      try {
+        const responseData = await fetchData(
+          "MembershipPosition/GetMembershipPositionforCommittee"
+        );
+        const labelValueArray = responseData.Collection.map(
+          (category: any) => ({
+            label: category.DisplayName,
+            value: category.Id,
+          })
+        );
+        setMemberShipPosition(labelValueArray);
+      } catch (error) {
+        console.error("Error fetching Membership Position:", error);
+      }
+    };
+    Promise.all([fetchDataForMemberShipPosition()]).catch((error) =>
+      console.error("Error fetching data:", error)
+    );
+  }, []);
+
+  React.useEffect(() => {
+    const fetchCurrentUser = async () => {
+      try {
+        const responseData = await fetchData(
+          "UserProfile/GetCurrentUserProfile"
+        );
+        setUserProfileId(responseData.Id);
+        //setIsStaffEditing(false);
+      } catch (error) {
+        console.error("Error fetching current user profile:", error);
+      }
+    };
+    fetchCurrentUser();
+    let memberId: string | null | undefined;
+    let committeeId: string | null | undefined;
+    if (
+      createCommitteeData.data &&
+      createCommitteeData.data.membershipRequestid
+    ) {
+      memberId = createCommitteeData.data.membershipRequestid;
+      setMembershipRequestId(memberId);
+    } else {
+      const storedMemberData = sessionStorage.getItem("memberShipId");
+      setMembershipRequestId(storedMemberData);
+      if (storedMemberData) {
+        memberId = storedMemberData;
+      }
+    }
+    if (createCommitteeData.data && createCommitteeData.data.committeeId) {
+      committeeId = createCommitteeData.data.committeeId;
+      setRequest((prevState) => ({
+        ...prevState,
+        committeeId: createCommitteeData.data.committeeId,
+      }));
+    } else {
+      const storedCommitteeId = sessionStorage.getItem("committeeId");
+      if (storedCommitteeId) {
+        committeeId = storedCommitteeId;
+        setRequest((prevState) => ({
+          ...prevState,
+          committeeId: storedCommitteeId,
+        }));
+      }
+    }
+
+    if (memberId) {
+      setEditMode(true);
+      const fetchDataMemberRequest = async () => {
+        try {
+          const responseData = await fetchData("MembershipRequest", memberId);
+          setMembershipRecordId(responseData.RecordId);
+          setMemberShipData(responseData);
+          if (responseData.AlternateMemberUserProfileId) {
+            setAlternetMemberFor(true);
+
+            await handleAlternetMemberChange(
+              responseData.AlternateMemberUserProfileId
+            );
+          } else {
+            setAlternetMemberFor(false);
+          }
+         setRequest((prevState) => ({
+            ...prevState,
+            Id: responseData.Id,
+            remark: responseData.Remark,
+            represents: responseData.Represents,
+            categoryOfInterestId: responseData.CategoryOfInterest.Id,
+            membershipPositionId: responseData.MembershipPosition.Id,
+            memberName: responseData.AlternateMemberUserProfileId,
+          }));
+        } catch (error) {
+          console.error("Error fetching Category of Interest:", error);
+        }
+      };
+      const fetchUploadMemberRequest = async () => {
+        try {
+          const response = await fetchData(
+            `MembershipRequestDocument/Search?Filters[0].Key=DocumentTypeId&Filters[0].Value=${userDocumentTypeId}&Filters[1].Key=membershipRequestId&Filters[1].Value=${memberId}&PageIndex=-1`
+          );
+          const documentData = response.Collection;
+          setDocumentDetails(documentData);
+        } catch (error) {
+          console.log(error);
+        }
+      };
+      fetchDataMemberRequest();
+      fetchUploadMemberRequest();
+    } else if (committeeId) {
+      setEditMode(false); // Set edit mode to false if only committee ID exists
+    }
+  }, [createCommitteeData, userProfileId]);
+
+  React.useEffect(() => {
+    const fetchCategoryOfRequest = async () => {
+      try {
+        let committeeIdToFetch = "";
+        // Check if request.committeeId is defined and use it
+        if (request.committeeId) {
+          committeeIdToFetch = request.committeeId;
+        } else if (rowData && rowData.CommitteeId) {
+          committeeIdToFetch = rowData.CommitteeId;
+        } else if (newData && newData.CommitteeId) {
+          committeeIdToFetch = newData.CommitteeId;
+        } else {
+          console.error("No valid committeeId found in request or rowData.");
+          return;
+        }
+
+        const responseData = await fetchData("Committee", committeeIdToFetch);
+
+        const categoryOfInterestCommittee =
+          responseData.CommitteCategoryofInterests;
+        const labelValueArray = categoryOfInterestCommittee.map(
+          (category: any) => ({
+            label: category.CategoryOfInterest.CategoryName,
+            value: category.CategoryOfInterest.Id,
+          })
+        );
+        setDefaultCOIOptions(labelValueArray);
+        if (!isAlternateMemberSelected) {
+          setCategoryOfInterest(labelValueArray);
+        }
+      } catch (error) {
+        console.error("Error fetching Category of Interest:", error);
+      }
+    };
+
+    fetchCategoryOfRequest();
+  }, [request.committeeId, rowData, newData]);
+
+ 
+  const handleBack = () => {
+    if (rowData) {
+      navigate("/member/create", { state: { rowData } });
+    } else {
+      navigate("/member/create");
+      sessionStorage.setItem("alternetMember", "false");
+      sessionStorage.removeItem("coiOption");
+      sessionStorage.removeItem("selectedMemberId");
+    }
+  };
+
+  const handleAlternetMemberChange = async (selectedUserProfileId: string) => {
+    setRequest((prevRequest) => ({
+      ...prevRequest,
+      memberName: selectedUserProfileId,
+    }));
+    if (selectedUserProfileId) {
+      setAlternetMemberError("");
+    }
+    sessionStorage.setItem("selectedMemberId", selectedUserProfileId);
+    try {
+      const coiResponse = await fetchCOIByUserProfileIdAndCommiteeId(
+        selectedUserProfileId
+      );
+      setIsAlternateMemberSelected(true);
+      if (coiResponse && typeof coiResponse === "object") {
+        const coiOption: DropdownOption = {
+          label: coiResponse.CategoryOfInterest,
+          value: coiResponse.CategoryOfInterestId,
+        };
+        setCategoryOfInterest([coiOption]);
+        setRequest((prevRequest) => ({
+          ...prevRequest,
+          categoryOfInterestId: coiOption.value,
+        }));
+         if (coiOption.value) {
+          setCategoryError("");
+        }
+         sessionStorage.setItem("coiOption", JSON.stringify(coiOption));
+      } else {
+        console.error("Unexpected COI response format", coiResponse);
+        setCategoryOfInterest([]);
+      }
+    } catch (error) {
+      console.error("Error handling COI:", error);
+      setCategoryOfInterest([]);
+    }
+  };
+
+  React.useEffect(() => {
+    const storedMemberId = sessionStorage.getItem("selectedMemberId");
+
+    if (storedMemberId) {
+      // Set the memberName from session storage
+      setRequest((prevRequest) => ({
+        ...prevRequest,
+        memberName: storedMemberId,
+      }));
+     // Fetch and set the COI based on the stored member
+      const fetchAndSetCOI = async () => {
+        try {
+          const coiResponse =
+            await fetchCOIByUserProfileIdAndCommiteeId(storedMemberId);
+          setIsAlternateMemberSelected(true);
+
+          if (coiResponse && typeof coiResponse === "object") {
+            const coiOption: DropdownOption = {
+              label: coiResponse.CategoryOfInterest,
+              value: coiResponse.CategoryOfInterestId,
+            };
+
+            setCategoryOfInterest([coiOption]);
+            setRequest((prevRequest) => ({
+              ...prevRequest,
+              categoryOfInterestId: coiOption.value,
+            }));
+            if (coiOption.value) {
+              setCategoryError("");
+            }
+          } else {
+            console.error("Unexpected COI response format", coiResponse);
+            setCategoryOfInterest([]);
+          }
+        } catch (error) {
+          console.error("Error handling COI:", error);
+          setCategoryOfInterest([]);
+        }
+      };
+      fetchAndSetCOI();
+    }
+  }, []);
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setTimeout(() => {
+      focusOnErrorField(".p-invalid");
+    }, 100);
+    let isValid = true;
+     if (!request.membershipPositionId) {
+      setPositionError(
+        `${t("member.committeePosition")} ${t("member.isRequired")}`
+      );
+      isValid = false;
+    } else {
+      setPositionError("");
+    }
+     if (alternetMemberFor && !request.memberName) {
+      setAlternetMemberError(
+        `${t("member.alternetMemberFor")} ${t("member.isRequired")}`
+      );
+      isValid = false;
+    } else {
+      setAlternetMemberError("");
+    }
+     if (CategoryOfInterest.length > 0 && !request.categoryOfInterestId) {
+      setCategoryError(
+        `${t("member.categoryOfInterest")} ${t("member.isRequired")}`
+      );
+      isValid = false;
+    } else {
+      setCategoryError("");
+    }
+    // Validate evidence document if Alternate Member is selected
+    if (isAlternateMemberSelected && !membershipRequestId) {
+      if (!fileEvidence || fileEvidence.length === 0) {
+        setEvidenceError(`${t("member.evidenceDocumentIsRequired")}`);
+        isValid = false;
+      } else {
+        setEvidenceError("");
+      }
+    }
+     if (!isValid) {
+      return; // Do not submit if the form is invalid
+    }
+    const createMemberRequest = await formatCreateMemberData(request);
+    if (isAlternateMemberSelected) {
+      createMemberRequest.AlternateMemberUserProfileId = request.memberName;
+    } else {
+      delete (createMemberRequest as Partial<typeof createMemberRequest>)
+        .AlternateMemberUserProfileId;
+    }
+     if (Reappointment) {
+      createMemberRequest.isMemberReappoinmentRequest = true;
+      createMemberRequest.isMemberReappointmentRecord = true;
+    } else {
+      createMemberRequest.isMemberReappoinmentRequest = false;
+      delete (createMemberRequest as Partial<typeof createMemberRequest>)
+        .isMemberReappointmentRecord;
+    }
+     createMemberRequest.userProfileId = userProfileId;
+      if (saveAsDraftClicked) {
+      createMemberRequest.userProfileId = userProfileId;
+      createMemberRequest.openPositionId = null;
+      await handlePostData(createMemberRequest);
+    } else if (rowData) {
+      createMemberRequest.userProfileId = userProfileId;
+      createMemberRequest.committeeId = rowData.CommitteeId;
+      createMemberRequest.openPositionId = rowData.OpenPositionId;
+      createMemberRequest.IsAgreeToConfidentialityAgreement = true;
+      createMemberRequest.IsAgreeToTermandCondition = true;
+      await handlePostData(createMemberRequest);
+    } else if (newData) {
+      createMemberRequest.userProfileId = userProfileId;
+      createMemberRequest.committeeId = newData.CommitteeId;
+      createMemberRequest.openPositionId = newData.OpenPositionId;
+      createMemberRequest.IsAgreeToConfidentialityAgreement = true;
+      createMemberRequest.IsAgreeToTermandCondition = true;
+      await handlePostData(createMemberRequest);
+    } else {
+      createMemberRequest.userProfileId = userProfileId;
+      createMemberRequest.openPositionId = null;
+      createMemberRequest.represents = request.represents;
+      createMemberRequest.remark = request.remark;
+      await handlePostData(createMemberRequest);
+    }
+  };
+
+  const errorMessageToast = (msg: string) => {
+    toast.current?.show({
+      severity: "error",
+      summary: "Error",
+      detail: msg,
+      life: 3000,
+    });
+  };
+
+  const handlePostData = async (formDetails: any) => {
+    try {
+      setLoading(true); // Start the loader
+      let response;
+      let membershipRequestId;
+
+      if (editMode) {
+        response = await putData(
+          "MembershipRequest",
+          memberShipData.Id,
+          formDetails
+        );
+        membershipRequestId = memberShipData.Id;
+      } else {
+        response = await postData("MembershipRequest", formDetails);
+        membershipRequestId = response.id;
+      }
+
+      dispatch(
+        createMemberRequest({ membershipRequestid: membershipRequestId })
+      );
+      sessionStorage.setItem(
+        "membershipRequestid",
+        JSON.stringify({ membershipRequestId })
+      );
+
+      if (response) {
+        // Wait for document upload to complete
+        await handleDocumentUpload(membershipRequestId);
+
+        if (saveAsDraftClicked && !rowData) {
+          showToast(
+            "success",
+            t("member.success"),
+            t(
+              `member.${editMode ? "dataUpdatedSuccessfullyAsDraft" : "dataSavedSuccessfullyAsDraft"}`
+            )
+          );
+          navigate("/member");
+        } else if (saveAsDraftClicked && rowData) {
+          toast.current.show({
+            severity: "success",
+            summary: "Success",
+            detail: t("member.dataUpdatedSuccessfullyAsDraft"),
+            life: 3000,
+          });
+          setTimeout(() => {
+            navigate("/positions");
+          }, 3000);
+        } else {
+          handleNavigation();
+        }
+      }
+    } catch (error: any) {
+      handleError(error);
+    } finally {
+      setLoading(false); // Stop the loader in the finally block
+    }
+  };
+
+  const handleDocumentUpload = async (membershipRequestId: string) => {
+    const combinedDocumentDataArray = []; // Combined array for both user and evidence documents
+
+    if (file) {
+      const filesArray = file; // Assuming file is an array of files
+      if (filesArray.length > 0) {
+        const documentResponse =
+          await handleFetchUserDocument(membershipRequestId);
+        const blobService = await initializeBlobService(documentResponse);
+
+        if (documentResponse && blobService) {
+          try {
+            for (let i = 0; i < filesArray.length; i++) {
+              const fileName = filesArray[i];
+              const fileBlob = new Blob([fileName], {
+                type: "application/octet-stream",
+              });
+
+              const containerName = documentResponse.containerName;
+              const containerClient = blobService.getContainerClient(
+                containerName.slice(0, -1)
+              );
+              const blobName = `${Date.now()}_${fileName.name}`;
+              const blockBlobClient =
+                containerClient.getBlockBlobClient(blobName);
+
+              const uploadBlobResponse =
+                await blockBlobClient.uploadBrowserData(fileBlob, {
+                  blockSize: 4 * 1024 * 1024, // 4MB
+                  concurrency: 20,
+                });
+
+              const url =
+                uploadBlobResponse._response.request.url.split("?")[0];
+
+              // Accumulate each document's data into the combined array
+              combinedDocumentDataArray.push({
+                isDirty: true,
+                isNew: true,
+                isActive: true,
+                isDeleted: false,
+                membershipRequestId,
+                documentName: fileName.name,
+                documentTypeId: requestDocumentTypeId, // Ensure this is a valid string
+                blobURL: url,
+                membershipRequestDocumentId:
+                  "00000000-0000-0000-0000-000000000000",
+              });
+            }
+          } catch (error) {
+            console.error("Document upload failed:", error);
+          }
+        }
+      }
+    }
+
+    // Handle evidence document upload
+    if (fileEvidence) {
+      const filesArray = fileEvidence; // Assuming fileEvidence is an array of files
+      if (filesArray.length > 0) {
+        const documentResponse =
+          await handleFetchEvidenceUserDocument(membershipRequestId);
+        const blobService = await initializeBlobService(documentResponse);
+
+        if (documentResponse && blobService) {
+          try {
+            for (let i = 0; i < filesArray.length; i++) {
+              const fileName = filesArray[i];
+              const fileBlob = new Blob([fileName], {
+                type: "application/octet-stream",
+              });
+
+              const containerName = documentResponse.containerName;
+              const containerClient = blobService.getContainerClient(
+                containerName.slice(0, -1)
+              );
+              const blobName = `${Date.now()}_${fileName.name}`;
+              const blockBlobClient =
+                containerClient.getBlockBlobClient(blobName);
+
+              const uploadBlobResponse =
+                await blockBlobClient.uploadBrowserData(fileBlob, {
+                  blockSize: 2 * 1024 * 1024, // 4MB
+                  concurrency: 10,
+                });
+
+              const url =
+                uploadBlobResponse._response.request.url.split("?")[0];
+
+              // Accumulate each document's data into the combined array
+              combinedDocumentDataArray.push({
+                isDirty: true,
+                isNew: true,
+                isActive: true,
+                isDeleted: false,
+                membershipRequestId,
+                documentName: fileName.name,
+                documentTypeId: evidenceDocumentTypeId, // Ensure this is a valid string
+                blobURL: url,
+                membershipRequestDocumentId:
+                  "00000000-0000-0000-0000-000000000000",
+              });
+            }
+          } catch (error) {
+            console.error("Evidence document upload failed:", error);
+          }
+        }
+      }
+    }
+
+    // Make a single bulk upload API call for both user and evidence documents
+    if (combinedDocumentDataArray.length > 0) {
+      try {
+        await postData(
+          "MembershipRequestDocument/BulkUpload",
+          combinedDocumentDataArray
+        );
+      } catch (error) {
+        console.error("Bulk document upload failed:", error);
+      } finally {
+      }
+    }
+  };
+
+  const handleNavigation = () => {
+    if (rowData) {
+      navigate("/member/preview", { state: { rowData } });
+    } else if (newData) {
+      navigate("/member/preview", { state: { newData } });
+    } else {
+      navigate("/member/preview");
+    }
+  };
+
+  const showToast = (severity: string, summary: string, detail: string) => {
+    if (toast.current) {
+      toast.current.show({
+        severity,
+        summary,
+        detail,
+      });
+    }
+  };
+
+  const handleError = (error: any) => {
+    console.error("Error posting data:", error);
+
+    if (
+      error.response?.data?.errors?.requestModel?.includes("limit has reached")
+    ) {
+      errorMessageToast(t("member.limitReached"));
+    }
+    if (
+      error.response?.data?.messages?.includes(
+        "Membership request already exists"
+      )
+    ) {
+      errorMessageToast(t("member.alreadyExist"));
+    }
+    if (
+      error.response?.data?.messages?.includes(
+        "Alternate Member for this position already exists within the committee"
+      )
+    ) {
+      errorMessageToast(t("member.alternateMemberExsist"));
+    }
+
+    // Handle the new message
+    if (
+      error.response?.data?.messages?.includes(
+        "Member already exists in the committee with this position"
+      )
+    ) {
+      errorMessageToast(t("member.positionAlreadyExist"));
+    }
+  };
+
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const validExtensions = [
+      ".xlsx",
+      ".xls",
+      ".doc",
+      ".docx",
+      ".ppt",
+      ".pptx",
+      ".txt",
+      ".pdf",
+      ".csv",
+    ];
+    const selectedFiles = event.target.files;
+    if (selectedFiles) {
+      setFileError("");
+      let totalSize = 0;
+      const filesArray: any[] = [];
+      let invalidFiles = false;
+
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        const fileExtension = file.name
+          .slice(file.name.lastIndexOf("."))
+          .toLowerCase();
+
+        if (!validExtensions.includes(fileExtension)) {
+          setErrorMessage(`${t("member.invalidFileType")}: ${file.name}`);
+          invalidFiles = true;
+          break;
+        }
+
+        totalSize += file.size;
+        filesArray.push(file);
+      }
+
+      if (!invalidFiles) {
+        const totalSizeInMB = totalSize / (1024 * 1024);
+        if (totalSizeInMB <= 500) {
+          setFile(filesArray);
+          setErrorMessage(undefined);
+          sessionStorage.setItem(
+            "uploadedFiles",
+            JSON.stringify(
+              filesArray.map((file) => ({
+                name: file.name,
+                size: file.size,
+                type: file.type,
+              }))
+            )
+          );
+        } else {
+          setErrorMessage(`${t("member.totalFileSizeExceed500")}`);
+          setFile(undefined);
+        }
+      } else {
+        setFile(undefined);
+      }
+    } else {
+      setFile(undefined);
+      setErrorMessage(undefined);
+    }
+  };
+
+  const handleEvidenceChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const validExtensions = [
+      ".xlsx",
+      ".xls",
+      ".doc",
+      ".docx",
+      ".ppt",
+      ".pptx",
+      ".txt",
+      ".pdf",
+      ".csv",
+    ];
+    setEvidenceError("");
+    const selectedFiles = event.target.files;
+    if (selectedFiles) {
+      let totalSize = 0;
+      const filesArray: any[] = [];
+      let invalidFiles = false;
+
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        const fileExtension = file.name
+          .slice(file.name.lastIndexOf("."))
+          .toLowerCase();
+
+        if (!validExtensions.includes(fileExtension)) {
+          setErrorEvidenceMessage(
+            `${t("member.invalidFileType")}: ${file.name}`
+          );
+          invalidFiles = true;
+          break;
+        }
+
+        totalSize += file.size;
+        filesArray.push(file);
+      }
+
+      if (!invalidFiles) {
+        const totalSizeInMB = totalSize / (1024 * 1024);
+        if (totalSizeInMB <= 500) {
+          setFileEvidence(filesArray);
+          setErrorEvidenceMessage("");
+          const fileData = filesArray.map((file) => ({
+            name: file.name,
+            size: file.size,
+          }));
+          sessionStorage.setItem("evidenceFiles", JSON.stringify(fileData));
+        } else {
+          setErrorEvidenceMessage(`${t("member.totalFileSizeExceed500")}`);
+          setFileEvidence([]);
+        }
+      } else {
+        setFileEvidence([]);
+      }
+    } else {
+      setFileEvidence([]);
+      setErrorEvidenceMessage("");
+    }
+  };
+
+  React.useEffect(() => {
+    const savedFiles = sessionStorage.getItem("evidenceFiles");
+    if (savedFiles) {
+      const filesArray = JSON.parse(savedFiles);
+      setFileEvidence(filesArray);
+    }
+
+    const savedUploadedFiles = sessionStorage.getItem("uploadedFiles");
+    if (savedUploadedFiles) {
+      const parsedFiles = JSON.parse(savedUploadedFiles);
+      setFile(parsedFiles);
+    }
+  }, []);
+
+  const handleDelete = (index: number) => {
+    if (file) {
+      const updatedFiles = [...file];
+      updatedFiles.splice(index, 1);
+      setFile(updatedFiles);
+      setFileKey((prevKey) => prevKey + 1);
+    }
+  };
+
+  const handleEvidenceDelete = (index: number) => {
+    if (Array.isArray(fileEvidence)) {
+      const updatedFiles = [...fileEvidence];
+      updatedFiles.splice(index, 1);
+      setFileEvidence(updatedFiles);
+      setEvidenceKey((prevKey) => prevKey + 1);
+    } else {
+      console.error("fileEvidence is not an array or is undefined");
+    }
+  };
+
+  const initializeBlobService = async (documentResponse: any) => {
+    const connectionString = `https://${documentResponse?.storageAccountName}.blob.core.windows.net?${documentResponse?.sasToken}`;
+
+    const blobServiceClient = new BlobServiceClient(connectionString);
+    return blobServiceClient;
+  };
+
+  const isValidMembershipRecordId = (id: string) => {
+    const invalidId = "00000000-0000-0000-0000-000000000000";
+    return id && id !== invalidId;
+  };
+
+  const handleFetchUserDocument = async (membershipId: string) => {
+    try {
+      const documentResponse = await fetchData(
+        `MembershipRequestDocument/GetRequestDocumentValetKey?membershipRequestId=${membershipId}&userDocumentType=RequestDocument`
+      );
+      return documentResponse;
+    } catch (error) {
+      console.error("Error fetching user document:", error);
+    }
+  };
+
+  const handleFetchEvidenceUserDocument = async (membershipId: string) => {
+    try {
+      const documentResponse = await fetchData(
+        `MembershipRequestDocument/GetRequestDocumentValetKey?membershipRequestId=${membershipId}&userDocumentType=EvidenceforAlternateMembership`
+      );
+      return documentResponse;
+    } catch (error) {
+      console.error("Error fetching user document:", error);
+    }
+  };
+
+  const getAll = async () => {
+    const fetchAllDocuments = await fetchData("DocumentType/GetAll");
+    const documents = fetchAllDocuments.Collection;
+
+    let requestDocumentId = null;
+    let evidenceDocumentId = null;
+
+    for (const document of documents) {
+      if (document.TypeName === "RequestDocument") {
+        requestDocumentId = document.Id;
+      } else if (document.TypeName === "EvidenceforAlternateMembership") {
+        evidenceDocumentId = document.Id;
+      }
+
+      // Break the loop if both IDs are found
+      if (requestDocumentId && evidenceDocumentId) {
+        break;
+      }
+    }
+
+    if (requestDocumentId) {
+      setUserDocumentTypeId(requestDocumentId);
+      setRequestDocumentTypeId(requestDocumentId);
+    }
+
+    if (evidenceDocumentId) {
+      setUserDocumentTypeId(evidenceDocumentId);
+      setEvidenceDocumentTypeId(evidenceDocumentId);
+    }
+  };
+
+  const fetchMemberFromCommittee = async () => {
+    if (storedData) {
+      try {
+        let committeeIdd: string | null = null;
+        let membershipRequestidd: string | null = null;
+
+        if (storedData) {
+          try {
+            const parsedData = JSON.parse(storedData);
+
+            if (parsedData && typeof parsedData === "object") {
+              committeeIdd = parsedData.committeeId || null;
+              membershipRequestidd = parsedData.membershipRequestid || null;
+            } else {
+              committeeIdd = storedData;
+            }
+          } catch (e) {
+            committeeIdd = storedData;
+          }
+        } else {
+          console.log("No stored data found.");
+        }
+
+        const CommitteeMemberResponse = await fetchData(
+          `CommitteeMembership/GetListByParentId?parentId=${committeeIdd}`
+        );
+        const response = CommitteeMemberResponse.collection;
+        if (Array.isArray(response)) {
+          const labelValueArray = response.map((member: any) => ({
+            label:
+              member.userProfile.firstname + " " + member.userProfile.lastname,
+            value: member.userProfileId,
+          }));
+
+          setAlternetMemberOptions(labelValueArray);
+
+          // If there's a pre-selected value in sessionStorage or elsewhere, update request.memberName
+          const preSelectedValue =
+            request.memberName || sessionStorage.getItem("selectedMemberId");
+          if (preSelectedValue) {
+            const isValidValue = labelValueArray.some(
+              (option) => option.value === preSelectedValue
+            );
+
+            if (isValidValue) {
+              setRequest((prevRequest) => ({
+                ...prevRequest,
+                memberName: preSelectedValue,
+              }));
+            }
+         }
+        } else {
+          console.error("Unexpected response format", response);
+        }
+      } catch (error) {
+        console.error("Error fetching committee members:", error);
+      }
+    } else {
+      console.warn("No stored data provided");
+    }
+  };
+
+  const fetchCOIByUserProfileIdAndCommiteeId = async (
+    userProfileId: string
+  ): Promise<any> => {
+    let committeeIdd: string | null = null;
+    let membershipRequestidd: string | null = null;
+
+    if (storedData) {
+      try {
+        const parsedData = JSON.parse(storedData);
+        if (parsedData && typeof parsedData === "object") {
+          committeeIdd = parsedData.committeeId || null;
+          membershipRequestidd = parsedData.membershipRequestid || null;
+        } else {
+          committeeIdd = storedData;
+        }
+      } catch (e) {
+        committeeIdd = storedData;
+      }
+    } else {
+      console.log("No stored data found.");
+    }
+    try {
+      const CommitteeMemberCOIResponse = await fetchData(
+        `CommitteeMembership/GetCategoryOfInterestByUserProfileId?userProfileId=${userProfileId}&commiteeId=${committeeIdd}`
+      );
+      const response = CommitteeMemberCOIResponse;
+      if (Reappointment) {
+        const preSelectedCategoryId = response.CategoryOfInterestId;
+        const preSelectedPositionId = response.MembershipPositionId;
+
+        if (preSelectedCategoryId) {
+          setRequest((prevRequest) => ({
+            ...prevRequest,
+            categoryOfInterestId: preSelectedCategoryId,
+          }));
+       }
+       if (preSelectedPositionId) {
+          setRequest((prevRequest) => ({
+            ...prevRequest,
+            membershipPositionId: preSelectedPositionId,
+          }));
+       }
+      }
+      if (
+        response &&
+        typeof response === "object" &&
+        !Array.isArray(response)
+      ) {
+        return response;
+      } else {
+        console.error("Unexpected COI response format", response);
+        return {};
+      }
+    } catch (error) {
+      console.error("Error fetching COI:", error);
+      return {};
+    }
+  };
+
+  React.useEffect(() => {
+    if (reappointmentUserProfileId) {
+      fetchCOIByUserProfileIdAndCommiteeId(reappointmentUserProfileId);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchMemberFromCommittee();
+    getAll();
+  }, []);
+
+  React.useEffect(() => {
+    if (rowData) {
+      setRequest((prevRequest) => ({
+        ...prevRequest,
+        membershipPositionId: rowData.MembershipPositionId,
+        categoryOfInterestId: rowData.CategoryOfInterestId,
+        committeeId: rowData.CommitteeId,
+        openPositionId: rowData.OpenPositionId,
+      }));
+   } else if (newData) {
+      setRequest((prevRequest) => ({
+        ...prevRequest,
+        membershipPositionId: newData.MembershipPositionId,
+        categoryOfInterestId: newData.CategoryOfInterestId,
+        committeeId: newData.CommitteeId,
+        openPositionId: newData.OpenPositionId,
+      }));
+     }
+  }, [rowData, newData]);
+
+  const handlePositionChange = (e: DropdownChangeEvent) => {
+    const selectedValue = e.value;
+    setRequest((prevRequest) => ({
+      ...prevRequest,
+      membershipPositionId: selectedValue,
+    }));
+    sessionStorage.setItem("membershipPositionId", selectedValue);
+    const selectedOption = MemberShipPosition.find(
+      (option) => option.value === selectedValue
+    );
+    if (selectedOption && selectedOption.label === "Alternate Member") {
+      setAlternetMemberFor(true);
+      sessionStorage.setItem("alternetMember", "true");
+      setCategoryError(""); // Clear COI error
+      setRequest((prevRequest) => ({
+        ...prevRequest,
+        categoryOfInterestId: "", // Clear COI value
+      }));
+     setIsAlternateMemberSelected(true);
+    } else {
+      setAlternetMemberFor(false);
+      setCategoryError("");
+      setAlternetMemberError("");
+      setErrorEvidenceMessage("");
+      setCategoryOfInterest(defaultCOIOptions);
+      sessionStorage.removeItem("alternetMember");
+      setRequest((prevRequest) => ({
+        ...prevRequest,
+        categoryOfInterestId: "",
+      }));
+    }
+     // Clear position error
+    if (selectedValue) {
+      setPositionError("");
+    }
+  };
+
+  React.useEffect(() => {
+    const isAlternateMember = sessionStorage.getItem("alternetMember");
+    const storedPositionId = sessionStorage.getItem("membershipPositionId");
+    if (storedPositionId) {
+      setRequest((prevRequest) => ({
+        ...prevRequest,
+        membershipPositionId: storedPositionId,
+      }));
+    }
+    if (isAlternateMember === "true") {
+      setAlternetMemberFor(true);
+    } else {
+      setAlternetMemberFor(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    const isAlternateMember = sessionStorage.getItem("alternetMember");
+    setAlternetMemberFor(isAlternateMember === "true");
+  }, []);
+
+  const [visible, setVisible] = useState<boolean>(false);
+
+  const handleCancel = () => {
+    sessionStorage.removeItem("membershipPositionId");
+    sessionStorage.removeItem("alternetMember");
+    sessionStorage.removeItem("evidenceFiles");
+    sessionStorage.removeItem("uploadedFiles");
+    setVisible(true);
+  };
+
+  const handleConfirm = () => {
+    if (rowData || newData) {
+      navigate("/positions");
+    } else {
+      navigate("/member");
+    }
+  };
+
+  const handleCancelDialog = () => {
+    setVisible(false);
+  };
+
+  return (
+    <>
+      {loading && <LoadingOverlay visible={loading} />}
+      <Toast ref={toast} />
+      <ConfirmDialogComponent
+        visible={visible}
+        onHide={() => setVisible(false)}
+        message="Are you sure you want to exit?"
+        header="Confirmation"
+        onConfirm={() => handleConfirm()}
+        onCancel={() => handleCancelDialog()}
+      />
+      <div className="">
+        <CustomBreadcrumb
+          model={breadcumbItems}
+          className="bg-transparent mb-5 px-0 py-2 border-none"
+        />
+        <div className="mb-5 flex flex-column gap-2">
+          <h1 className="text-title display-xs font-bold m-0">
+            {Reappointment
+              ? t("member.reappointmentHeading")
+              : t("member.membershipRequest")}
+          </h1>
+          <p className="text-base font-normal m-0">
+            {t("member.membershipRequestSubText")}
+          </p>
+        </div>
+
+        <MemberRequestSteps activeStep={1} />
+        <form onSubmit={handleSubmit}>
+          <div className="card bg-white w-full mb-5 shadow-md">
+            <div className="flex align-items-center align-self-center px-5 py-4 border-bottom-1 border-gray-200 gap-3 cardHeader">
+              <div className="flex flex-column gap-1">
+                <h2 className="text-title text-lg font-bold m-0">
+                  {t("member.membershipDetail")}
+                </h2>
+                <p className="text-base font-normal m-0 text-help">
+                  {t("member.allFieldsRequired")}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-5 cardBody">
+              <div className="flex flex-column gap-3">
+                <div className="grid grid-xl">
+                  <div className="flex flex-column gap-2">
+                    <h3 className="m-0 font-bold text-base">
+                      {t("member.staffSecretary")}
+                    </h3>
+                    <p className="text-base text-title font-normal m-0">
+                      {committeeDetails.committeeData}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-xl align-items-end">
+                  <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12 minHeight">
+                    <label
+                      htmlFor="position"
+                      className="block font-bold text-input-label capitalize"
+                    >
+                      {t("member.committeePosition")} <span className="text-red-500 align-top">*</span>
+                    </label> 
+                    <Dropdown
+                      inputId="position"
+                      aria-describedby="positionError"
+                      value={request.membershipPositionId}
+                      onChange={handlePositionChange}
+                      options={MemberShipPosition}
+                      optionLabel="label"
+                      placeholder="Select an Option"
+                      className="w-full"
+                      disabled={
+                        rowData || newData || Reappointment ? true : false
+                      }
+                    />
+                    {positionError && (
+                      <span
+                        id="positionError"
+                        className="p-error font-bold text-capitalize"
+                      >
+                        {positionError}
+                      </span>
+                    )}
+                  </div>
+                  {alternetMemberFor && (
+                    <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12 minHeight">
+                      <label
+                        htmlFor="alternetMember"
+                        className="block font-bold text-input-label capitalize"
+                      >
+                        {t("member.alternetMemberFor")}  <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Dropdown
+                        inputId="alternetMember"
+                        aria-describedby="alternetMemberError"
+                        value={request.memberName}
+                        onChange={(e: DropdownChangeEvent) =>
+                          handleAlternetMemberChange(e.value)
+                        }
+                        options={alternetMemberOptions}
+                        optionLabel="label"
+                        placeholder="Select an Option"
+                        className="w-full"
+                        disabled={
+                          rowData || newData || Reappointment ? true : false
+                        }
+                      />
+                      {alternetMemberError && (
+                        <span
+                          id="alternetMemberError"
+                          className="p-error font-bold text-capitalize"
+                        >
+                          {alternetMemberError}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {CategoryOfInterest.length > 0 && (
+                  <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12 minHeight">
+                    <label
+                      htmlFor="categoryInterest"
+                      className="block font-bold text-input-label capitalize"
+                    >
+                      {t("member.categoryOfInterest")} <span className="text-red-500 align-top">*</span>
+                    </label>
+                    <Dropdown
+                      inputId="categoryInterest"
+                      aria-describedby="categoryInterestError"
+                      value={request.categoryOfInterestId}
+                      onChange={(e: DropdownChangeEvent) => {
+                        const selectedValue = e.value;
+                        setRequest((prevRequest) => ({
+                          ...prevRequest,
+                          categoryOfInterestId: selectedValue,
+                        }));
+                        if (selectedValue) {
+                          setCategoryError("");
+                        }
+                      }}
+                      options={CategoryOfInterest}
+                      optionLabel="label"
+                      placeholder="Select an Option"
+                      className="w-full"
+                      disabled={
+                        rowData ||
+                        newData ||
+                        Reappointment ||
+                        (isAlternateMemberSelected && alternetMemberFor)
+                      }
+                    />
+                    {categoryError && (
+                      <span
+                        id="categoryInterestError"
+                        className="p-error font-bold text-capitalize"
+                      >
+                        {categoryError}
+                      </span>
+                    )}
+                  </div>
+                  )}
+                </div>
+
+                <div className="grid grid-xl">
+                  <div className="xl:col-6 lg:col-8 md:col-12 col-12">
+                    <h2 className="font-bold text-base">
+                      {t("member.requestDouments")}
+                    </h2>
+                    <div className="relative md:w-16rem custom-file-upload mb-2">
+                      <input
+                        type="file"
+                        key={fileKey}
+                        id="fileInput1"
+                        aria-labelledby="fileInput1"
+                        accept=".xlsx,.xls,.doc, .docx,.ppt, .pptx,.txt,.pdf,.csv"
+                        multiple
+                        onChange={handleChange}
+                      />
+                      <label
+                        htmlFor="fileInput1"
+                        className="flex flex-column align-items-center justify-content-center gap-2 p-3"
+                      >
+                        <span className="bg-brand-500 border-circle flex align-items-center justify-content-center">
+                          <FeatherIcon
+                            name="plus"
+                            size={32}
+                            color="var(--icon-white)"
+                            onClick={undefined}
+                          />
+                        </span>
+                        <span className="text-sm font-normal">
+                          {t("member.browseDosPlacehoder")} <br />
+                          {t("member.maxFileSize")}
+                        </span>
+                      </label>
+                    </div>
+                    {membershipRequestId && (
+                      <RequestListDocument
+                        documentType="RequestDocument"
+                        membershipRequestID={membershipRequestId}
+                        showNoDataMessage={false}
+                      />
+                    )}
+
+                    <div>
+                      {errorMessage && (
+                        <div key="errorMessage" className="p-error font-bold">
+                          {errorMessage}
+                        </div>
+                      )}
+                      {file && (
+                        <div className="flex flex-column gap-3">
+                          {file.map((fileName: any, index: number) => (
+                            <div
+                              key={index}
+                              className="flex align-items-center gap-3"
+                            >
+                              <a className="m-0 flex align-items-center gap-2 underline text-charcoal">
+                                <img src={pdfIcon} alt="PDF" />
+                                <span>{fileName.name}</span>
+                              </a>
+                              <Button
+                                text
+                                type="button"
+                                className="p-button-plain gap-2 text-delete underline"
+                                onClick={() => handleDelete(index)}
+                              >
+                                <FeatherIcon name="trash-2" size={20} />
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {alternetMemberFor && (
+                    <div className="xl:col-6 lg:col-8 md:col-12 col-12">
+                      <h2 className="font-bold text-base">
+                        {t("member.EvidenceforAlternateMembership")}
+                      </h2>
+                      <div className="relative md:w-16rem custom-file-upload mb-2">
+                        <input
+                          type="file"
+                          key={evidenceKey}
+                          id="fileInput2"
+                          aria-labelledby="fileInput2"
+                          accept=".xlsx,.xls,.doc, .docx,.ppt, .pptx,.txt,.pdf,.csv"
+                          multiple
+                          onChange={handleEvidenceChange}
+                        />
+                        <label
+                          htmlFor="fileInput2"
+                          className="flex flex-column align-items-center justify-content-center gap-2 p-3"
+                        >
+                          <span className="bg-brand-500 border-circle flex align-items-center justify-content-center">
+                            <FeatherIcon
+                              name="plus"
+                              size={32}
+                              color="var(--icon-white)"
+                              onClick={undefined}
+                            />
+                          </span>
+                          <span className="text-sm font-normal">
+                            {t("member.browseDosPlacehoder")} <br />
+                            {t("member.maxFileSize")}
+                          </span>
+                        </label>
+                      </div>
+
+                      <div>
+                        {errorEvidenceMessage && (
+                          <div key="errorMessage" className="p-error font-bold">
+                            {errorEvidenceMessage}
+                          </div>
+                        )}
+                        {fileEvidence && (
+                          <div className="flex flex-column gap-3">
+                            {fileEvidence.map(
+                              (fileName: any, index: number) => (
+                                <div
+                                  key={index}
+                                  className="flex align-items-center gap-3"
+                                >
+                                  <a className="m-0 flex align-items-center gap-2 underline text-charcoal">
+                                    <img src={pdfIcon} alt="PDF" />
+                                    <span>{fileName.name}</span>
+                                  </a>
+                                  <Button
+                                    text
+                                    type="button"
+                                    className="p-button-plain gap-2 text-delete underline"
+                                    onClick={() => handleEvidenceDelete(index)}
+                                  >
+                                    <FeatherIcon name="trash-2" size={20} />
+                                  </Button>
+                                </div>
+                              )
+                            )}
+                          </div>
+                        )}
+                        {evidenceError && (
+                          <span
+                            id="categoryInterestError"
+                            className="p-error font-bold text-capitalize"
+                          >
+                            {evidenceError}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {isValidMembershipRecordId(membershipRecordId) && (
+                  <div className="grid grid-xl">
+                    <div className="xl:col-6 lg:col-8 md:col-12 col-12">
+                      <h2 className="font-bold text-base">
+                        {t("member.recordDoumentsLabel")}
+                      </h2>
+
+                      <p className="m-0 font-normal text-base text-title m-0 w-full">
+                        <RecordListDocument
+                          documentType="RecordDocument"
+                          membershipRecordID={membershipRecordId}
+                        />
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-xl">
+                  <div className="xl:col-6 lg:col-8 md:col-12 col-12">
+                    <label
+                    htmlFor="represents"
+                    className="block font-bold mb-2 text-input-label text-capitalize"
+                    >
+                      {t("member.representing")}
+                      
+                    </label>
+                    <InputText
+                    id="represents"
+                    type="text"
+                    value={request.represents}
+                    name="Representing"
+                    onChange={(e: any) => {
+                      setRequest((prev) => ({
+                        ...prev,
+                        represents: e.target.value
+                      }));
+                    }}
+                    placeholder={t("member.representing")}
+                    />
+                  </div>
+                </div>
+                {hasAccess("MembershipRequestComment") &&
+                <div className="grid grid-xl">
+                  <div className="xl:col-6 lg:col-8 md:col-12 col-12">
+                    <label
+                    htmlFor="remark"
+                    className="block font-bold mb-2 text-input-label text-capitalize"
+                    >
+                      {t("member.requestComments")}
+                    </label>
+                    <InputText
+                    type="text"
+                    value={request.remark}
+                    name="RequestComments"
+                    onChange={(e: any) => {
+                      setRequest((prev) => {
+                        const updated = { ...prev, remark: e.target.value };
+                        return updated;
+                      });
+                    }}
+                    placeholder={t("member.requestComments")}
+                    />
+                  </div>
+                </div>}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white hidden md:flex align-items-center px-5 py-3 gap-4 fixed-footer w-full left-0 shadow">
+            <Button
+              label={t("member.cancel")}
+              className="button-md"
+              severity="secondary"
+              onClick={handleCancel}
+            />
+            <Button
+              onClick={() => {
+                setSaveAsDraftClicked(true);
+              }}
+              text
+              className="p-button-plain underline ml-auto"
+              label={t("member.saveasdraft")}
+            ></Button>
+            <Button
+              className="button-md gap-1"
+              severity="secondary"
+              onClick={() => {
+                handleBack();
+              }}
+            >
+              <FeatherIcon name="chevron-left" size={20} color="inherit" />
+              <span className="font-bold text-capitalize">
+                {t("member.back")}
+              </span>
+            </Button>
+            <Button
+              onClick={() => {
+                setSaveAsDraftClicked(false);
+              }}
+              label={t("member.preview")}
+              className="button-md"
+            />
+          </div>
+
+          {/* Mobile responsive buttions */}
+          <div className="bg-white md:hidden flex flex-wrap align-items-center px-5 py-3 gap-3 fixed-footer w-full left-0 shadow">
+            <Button
+              onClick={() => {
+                setSaveAsDraftClicked(false);
+              }}
+              label={t("member.preview")}
+              className="button-md w-full"
+            />
+            <div className="flex align-items-center gap-3 w-full">
+              <Button
+                className="button-md gap-1"
+                severity="secondary"
+                onClick={() => {
+                  navigate("/member/create");
+                }}
+                aria-label={t("member.back")}
+              >
+                <FeatherIcon name="chevron-left" size={20} color="inherit" />
+              </Button>
+              <Button
+                label={t("member.cancel")}
+                className="button-md w-full"
+                severity="secondary"
+                onClick={handleCancel}
+              />
+            </div>
+            <Button
+              onClick={() => {
+                setSaveAsDraftClicked(true);
+              }}
+              text
+              className="p-button-plain underline w-full"
+              label={t("member.saveasdraft")}
+            ></Button>
+          </div>
+        </form>
+      </div>
+    </>
+  );
+};
+
+export default withLoader(MembershipDetails);
