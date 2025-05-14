@@ -1,0 +1,709 @@
+import React, {
+  forwardRef,
+  useImperativeHandle,
+  useEffect,
+  useState,
+  useMemo,
+} from "react";
+import { useTranslation } from "react-i18next";
+import { Dropdown } from "primereact/dropdown";
+import { RadioButton } from "primereact/radiobutton";
+import { InputText } from "primereact/inputtext";
+import { Controller, useForm } from "react-hook-form";
+import { InputTextarea } from "primereact/inputtextarea";
+import { useLanguageContext } from "../LanguageContext";
+import { useDispatch, useSelector } from "react-redux";
+import {
+  createBasicDetail,
+  setActiveStep,
+  setStandardId,
+} from "../../slices/createStandard";
+import { RootState } from "../../store/store";
+import {
+  postData,
+  putData,
+  fetchData,
+} from "../../services/Standard/apiServiceStandard";
+import LoadingOverlay from "../common/LoadingOverlay";
+import { setToast } from "../../slices/toastSlice";
+import {
+  getDefaultBasicFormValue,
+  getStandardDataTypes,
+  generateYears,
+  createStandardBasicDetails,
+} from "./utills/standardUtills";
+import { BlobServiceClient } from "@azure/storage-blob";
+import DocumentUpload from "./UploadDocument";
+import Edition from "./Edition";
+
+interface BasicDetailsProps {
+  commiteeData: Array<{ Name: string; Id: string }>;
+  maintainanceCycleData: Array<{ Name: string; Id: string }>;
+  standardDataTypes: any;
+  onNext: (data: Record<string, any>) => void;
+  isDisabled?: boolean;
+}
+export interface BasicDetailsRef {
+  submit: () => void;
+}
+// Convert to a forwardRef component
+const BasicDetails = forwardRef<BasicDetailsRef, BasicDetailsProps>(
+  (
+    {
+      commiteeData,
+      maintainanceCycleData,
+      standardDataTypes,
+      onNext,
+      isDisabled,
+    },
+    ref
+  ) => {
+    const createRequestDetail = useSelector(
+      (state: RootState) => state.standardRequest
+    );
+
+    const dispatch = useDispatch();
+    const [t, i18n] = useTranslation("standard");
+    const { selectedLanguage } = useLanguageContext();
+
+    const performAction = () => {
+      i18n.changeLanguage(selectedLanguage);
+    };
+
+    const standardDocumentInfo = getStandardDataTypes(standardDataTypes);
+    const standardDocumentType = standardDocumentInfo?.Name;
+    const standardDocumentTypeId = standardDocumentInfo?.Id;
+    const [standardId, setId] = useState(
+      createRequestDetail.id ? createRequestDetail.id : ""
+    );
+    const [files, setFiles] = useState<any | undefined>(undefined);
+
+    useEffect(() => {
+      performAction();
+    }, [selectedLanguage]);
+
+    const [loading, setLoading] = useState(false);
+
+    const defaultFormValues = useMemo(
+      () => getDefaultBasicFormValue(createRequestDetail?.basicDetail),
+      [createRequestDetail?.basicDetail]
+    );
+
+    const {
+      control,
+      formState: { errors },
+      handleSubmit,
+      reset,
+      watch,
+    } = useForm({
+      defaultValues: defaultFormValues,
+    });
+
+    const StandardCreationBasedOn = watch("StandardCreationBasedOn");
+
+    useEffect(() => {
+      setId(createRequestDetail.id);
+      reset(defaultFormValues);
+    }, [createRequestDetail?.basicDetail, reset]);
+
+    const initializeBlobService = async (documentResponse: any) => {
+      const connectionString = `https://${documentResponse?.storageAccountName}.blob.core.windows.net?${documentResponse?.sasToken}`;
+
+      const blobServiceClient = new BlobServiceClient(connectionString);
+      return blobServiceClient;
+    };
+
+    const uploadFile = async (StandardId: any) => {
+      if (files && files.length > 0) {
+        try {
+          const getTokeInfo = await fetchData(
+            `/StandardDocument/GetStandardDocumentValetKey?standardId=${StandardId}&standardDocumentType=${standardDocumentType}`,
+            {}
+          );
+          const blobClient = await initializeBlobService(getTokeInfo);
+          const documentArray = [];
+          let userDocumentData: any;
+          for (let i = 0; i < files.length; i++) {
+            const fileName = files[i];
+            const fileBlob = new Blob([fileName], {
+              type: "application/octet-stream",
+            });
+            const containerName = getTokeInfo.containerName;
+            const sub = containerName.substring(0, containerName.length - 1);
+            const containerClient = blobClient?.getContainerClient(sub);
+            const currentTime = Date.now();
+            const blobName = `${currentTime}_${fileName.name}`;
+            const blockBlobClient =
+              containerClient.getBlockBlobClient(blobName);
+            const uploadBlobResponse = await blockBlobClient.uploadBrowserData(
+              fileBlob,
+              {
+                blockSize: 4 * 1024 * 1024,
+                concurrency: 20,
+              }
+            );
+            const url = uploadBlobResponse._response.request.url;
+            const parts = url.split("?");
+            const modifiedBlobUrl = parts[0];
+            if (modifiedBlobUrl) {
+              // Create document data object for the current file
+              userDocumentData = {
+                isDirty: true,
+                isNew: true,
+                isActive: true,
+                isDeleted: false,
+                standardId: StandardId,
+                name: fileName.name,
+                standardDocumentTypeId: standardDocumentTypeId,
+                blobURL: modifiedBlobUrl,
+                userDocumentId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                CustomVersion: "v1",
+                InternalVersion: 1,
+              };
+              documentArray.push(userDocumentData); // Add to the array
+            }
+          }
+          await postData("StandardDocument/BulkUpload", documentArray);
+        } catch (error: any) {
+          console.error(error.message);
+        }
+      }
+    };
+
+    const onSubmit = async (data: Record<string, any>) => {
+      let requetBody = createStandardBasicDetails(data);
+      setLoading(true);
+      try {
+        let createStandard;
+        if (createRequestDetail.id) {
+          createStandard = await putData(
+            "Standard/UpdateBasicDetails",
+            createRequestDetail.id,
+            requetBody
+          );
+          await uploadFile(createRequestDetail.id);
+        } else {
+          createStandard = await postData("Standard/Add", requetBody);
+          await uploadFile(createStandard.id);
+        }
+
+        dispatch(createBasicDetail(requetBody));
+        dispatch(setStandardId(createStandard.id));
+        dispatch(setActiveStep(1));
+        onNext(data);
+      } catch (error: any) {
+        if (
+          error?.response?.data?.messages &&
+          error?.response?.data?.messages.length > 0
+        ) {
+          dispatch(
+            setToast({
+              message: error?.response?.data?.messages[0],
+              severity: "error",
+            })
+          );
+        } else {
+          // Handle generic error
+          dispatch(
+            setToast({
+              message: error.message || "An error occurred. Please try again.",
+              severity: "error",
+            })
+          );
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    useImperativeHandle(ref, () => ({
+      submit: () => {
+        handleSubmit(onSubmit)();
+      },
+    }));
+
+    const handleFiles = (filesData: any) => {
+      setFiles(filesData);
+    };
+
+    return (
+      <>
+        {loading && <LoadingOverlay visible={loading} />}
+        <form>
+          <div>
+            <div className="card bg-white w-full mb-5 shadow-md">
+              <div className="flex align-items-center align-self-center px-5 py-4 border-bottom-1 border-gray-200 gap-3 cardHeader">
+                <h2 className="text-title text-lg font-bold m-0">
+                  {t("standard.basicStandardDetails")}
+                </h2>
+              </div>
+              <div className="p-5 cardBody">
+                <div className="flex flex-column gap-3">
+                  <div className="grid grid-xl">
+                    <div className="flex flex-column gap-3">
+                      <fieldset className="border-none p-0">
+                        <legend className="block font-bold text-input-label p-0 mb-3">
+                          {t("standard.standardCreationBasedOn")}
+                        </legend>
+                        <div className="flex flex-wrap gap-3">
+                          <div className="flex align-items-center">
+                            <Controller
+                              name="StandardCreationBasedOn"
+                              control={control}
+                              render={({ field }) => (
+                                <>
+                                  <RadioButton
+                                    inputId="standardCreationBasedOn1"
+                                    name="StandardCreationBasedOn"
+                                    value="Committee"
+                                    disabled={isDisabled}
+                                    checked={field.value === "Committee"}
+                                    onChange={(e) => {
+                                      field.onChange(e.value);
+                                    }} // Bind to react-hook-form
+                                  />
+                                  <label
+                                    htmlFor="standardCreationBasedOn1"
+                                    className="ml-2"
+                                  >
+                                    {t("standard.committee")}
+                                  </label>
+                                </>
+                              )}
+                            />
+                          </div>
+                          <div className="flex align-items-center">
+                            <Controller
+                              name="StandardCreationBasedOn"
+                              control={control}
+                              render={({ field }) => (
+                                <>
+                                  <RadioButton
+                                    inputId="standardCreationBasedOn2"
+                                    name="StandardCreationBasedOn"
+                                    value="Direct"
+                                    disabled={isDisabled}
+                                    checked={field.value === "Direct"}
+                                    onChange={(e) => {
+                                      field.onChange(e.value);
+                                    }} // Bind to react-hook-form
+                                  />
+                                  <label
+                                    htmlFor="standardCreationBasedOn2"
+                                    className="ml-2"
+                                  >
+                                    {t("standard.direct")}
+                                  </label>
+                                </>
+                              )}
+                            />
+                          </div>
+                        </div>
+                      </fieldset>
+                    </div>
+                  </div>
+
+                  {StandardCreationBasedOn === "Committee" && (
+                    <div className="grid grid-xl align-items-end">
+                      <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                        <label
+                          htmlFor="CommitteeId"
+                          className={`block font-bold text-capitalize ${errors.CommitteeId ? "p-error" : "text-input-label"
+                            }`}
+                        >
+                          {t("standard.committeeName")} <span className="text-red-500 align-top">*</span>
+                        </label>
+                        <Controller
+                          name="CommitteeId"
+                          control={control}
+                          rules={{
+                            required: `${t("standard.committeeName")} ${t("standard.isRequired")}`,
+                          }}
+                          render={({ field }) => (
+                            <Dropdown
+                              filter
+                              inputId="CommitteeId"
+                              disabled={isDisabled}
+                              aria-describedby="committeeNameError"
+                              {...field}
+                              value={field.value}
+                              options={commiteeData}
+                              optionLabel="Name"
+                              optionValue="Id"
+                              placeholder={t("standard.select")}
+                              className={`w-full ${errors.CommitteeId ? "p-invalid" : ""}`}
+                              onChange={(e) => {
+                                field.onChange(e.value);
+                              }}
+                            />
+                          )}
+                        />
+                        <span
+                          id="committeeNameError"
+                          className={`p-error font-bold text-capitalize ${errors.CommitteeId ? "" : "error-hidden"
+                            }`}
+                        >
+                          {`${errors.CommitteeId?.message}`}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {StandardCreationBasedOn === "Committee" && (
+                    <div className="grid grid-xl align-items-end">
+                      <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                        <label
+                          htmlFor="meetingId"
+                          className={`block font-bold text-capitalize text-input-label`}
+                        >
+                          {t("standard.meetingId")}
+                        </label>
+                        <Controller
+                          name="MeetingNumber"
+                          control={control}
+                          render={({ field }) => (
+                            <InputText
+                              id="MeetingNumber"
+                              disabled={isDisabled}
+                              {...field}
+                              placeholder={t("standard.meetingId")}
+                              className={`w-full`}
+                            />
+                          )}
+                        />
+                      </div>
+                      <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                        <label
+                          htmlFor="recordId"
+                          className={`block font-bold text-capitalize text-input-label`}
+                        >
+                          {t("standard.recordId")}
+                        </label>
+                        <Controller
+                          name="RecordNumber"
+                          control={control}
+                          render={({ field }) => (
+                            <InputText
+                              id="RecordNumber"
+                              disabled={isDisabled}
+                              {...field}
+                              placeholder={t("standard.recordId")}
+                              className={`w-full`}
+                            />
+                          )}
+                        />
+                      </div>
+                      <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                        <label
+                          htmlFor="BallotNumber"
+                          className={`block font-bold text-capitalize ${errors.BallotNumber ? "p-error" : "text-input-label"
+                            }`}
+                        >
+                          {t("standard.ballotId")}
+                        </label>
+                        <Controller
+                          name="BallotNumber"
+                          control={control}
+                          render={({ field }) => (
+                            <InputText
+                              id="ballotId"
+                              disabled={isDisabled}
+                              aria-describedby="ballotIdError"
+                              {...field}
+                              placeholder={t("standard.ballotId")}
+                            />
+                          )}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                      <label
+                        htmlFor="standardName"
+                        className={`block font-bold text-capitalize ${errors.Name ? "p-error" : "text-input-label"
+                          }`}
+                      >
+                        {t("standard.standardName")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="Name"
+                        control={control}
+                        rules={{
+                          required: `${t("standard.standardName")} ${t("standard.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputText
+                            id="name"
+                            disabled={isDisabled}
+                            aria-describedby="standardNameError"
+                            {...field}
+                            maxLength={50}
+                            placeholder={t("standard.standardName")}
+                            className={`w-full ${errors.Name ? "p-invalid" : ""
+                              }`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="standardNameError"
+                        className={`p-error font-bold text-capitalize ${errors.Name ? "" : "error-hidden"
+                          }`}
+                      >
+                        {`${errors.Name?.message}`}
+                      </span>
+                    </div>
+                    <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                      <label
+                        htmlFor="standardShortName"
+                        className={`block font-bold text-capitalize ${errors.ShortName ? "p-error" : "text-input-label"
+                          }`}
+                      >
+                        {t("standard.standardShortName")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="ShortName"
+                        control={control}
+                        rules={{
+                          required: `${t("standard.standardShortName")} ${t("standard.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputText
+                            id="standardShortName"
+                            aria-describedby="standardShortNameError"
+                            {...field}
+                            maxLength={30}
+                            placeholder={t("standard.standardShortName")}
+                            className={`w-full ${errors.ShortName ? "p-invalid" : ""
+                              }`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="standardShortNameError"
+                        className={`p-error font-bold text-capitalize ${errors.ShortName ? "" : "error-hidden"
+                          }`}
+                      >
+                        {`${errors.ShortName?.message}`}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                      <label
+                        htmlFor="standardShortName"
+                        className={`block font-bold text-capitalize ${errors.ShortName ? "p-error" : "text-input-label"
+                          }`}
+                      >
+                        {t("standard.designation")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="Designation"
+                        control={control}
+                        rules={{
+                          required: `${t("standard.designation")} ${t("standard.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputText
+                            id="Designation"
+                            aria-describedby="standardShortNameError"
+                            {...field}
+                            maxLength={30}
+                            placeholder={t("standard.designation")}
+                            className={`w-full ${errors.ShortName ? "p-invalid" : ""
+                              }`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="standardShortNameError"
+                        className={`p-error font-bold text-capitalize ${errors.Designation ? "" : "error-hidden"
+                          }`}
+                      >
+                        {`${errors.Designation?.message}`}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                      <label
+                        htmlFor="MaintainanceCycleId"
+                        className={`block font-bold text-capitalize ${errors.MaintainanceCycleId ? " p-error" : "text-input-label"}`}
+                      >
+                        {t("standard.maintenanceCycle")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="MaintainanceCycleId"
+                        control={control}
+                        rules={{
+                          required: `${t("standard.maintenanceCycle")} ${t("standard.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <Dropdown
+                            inputId="MaintainanceCycleId"
+                            aria-describedby="maintenanceCycleError"
+                            {...field}
+                            value={field.value}
+                            options={maintainanceCycleData}
+                            optionLabel="Name"
+                            optionValue="Id"
+                            placeholder={t("standard.select")}
+                            className={`w-full ${errors.MaintainanceCycleId ? "p-invalid" : ""}`}
+                            onChange={(e) => {
+                              field.onChange(e.value);
+                            }}
+                          />
+                        )}
+                      />
+                      <span
+                        id="maintenanceCycleError"
+                        className={`p-error font-bold text-capitalize ${errors.MaintainanceCycleId ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.MaintainanceCycleId?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {!isDisabled && !standardId && (
+                    <>
+                      <div className=" cardHeader">
+                        <h2 className="text-title text-lg font-bold m-0">
+                          Edition
+                        </h2>
+                      </div>
+                      <Edition
+                        t={t}
+                        control={control}
+                        errors={errors}
+                      ></Edition>
+                    </>
+                  )}
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-9 col-12">
+                      <label
+                        htmlFor="StandardAbstract"
+                        className={`block font-bold text-capitalize ${errors.StandardAbstract ? " p-error" : "text-input-label"}`}
+                      >
+                        {t("standard.standardAbstract")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="StandardAbstract"
+                        control={control}
+                        rules={{
+                          required: `${t("standard.standardAbstract")} ${t("standard.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputTextarea
+                            id="StandardAbstract"
+                            aria-describedby="standardAbstractError"
+                            {...field}
+                            rows={5}
+                            cols={30}
+                            maxLength={500}
+                            placeholder={t("standard.standardAbstract")}
+                            className={`w-full ${errors.StandardAbstract ? "p-invalid" : ""}`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="standardAbstractError"
+                        className={`p-error font-bold text-capitalize ${errors.StandardAbstract ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.StandardAbstract?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-9 col-12">
+                      <label
+                        htmlFor="IndustryNeeds"
+                        className={`block font-bold text-capitalize ${errors.IndustryNeeds ? " p-error" : "text-input-label"}`}
+                      >
+                        {t("standard.industryNeeds")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="IndustryNeeds"
+                        control={control}
+                        rules={{
+                          required: `${t("standard.industryNeeds")} ${t("standard.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputTextarea
+                            id="IndustryNeeds"
+                            aria-describedby="industryNeedsError"
+                            {...field}
+                            rows={5}
+                            cols={30}
+                            maxLength={500}
+                            placeholder={t("standard.industryNeeds")}
+                            className={`w-full ${errors.IndustryNeeds ? "p-invalid" : ""}`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="industryNeedsError"
+                        className={`p-error font-bold text-capitalize ${errors.IndustryNeeds ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.IndustryNeeds?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-9 col-12">
+                      <label
+                        htmlFor="ProposedBenefit"
+                        className={`block font-bold text-capitalize ${errors.ProposedBenefit ? " p-error" : "text-input-label"}`}
+                      >
+                        {t("standard.proposedBenefit")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="ProposedBenefit"
+                        control={control}
+                        rules={{
+                          required: `${t("standard.proposedBenefit")} ${t("standard.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputTextarea
+                            id="ProposedBenefit"
+                            aria-describedby="proposedBenefitError"
+                            {...field}
+                            rows={5}
+                            cols={30}
+                            maxLength={500}
+                            placeholder={t("standard.proposedBenefit")}
+                            className={`w-full ${errors.ProposedBenefit ? "p-invalid" : ""}`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="proposedBenefitError"
+                        className={`p-error font-bold text-capitalize ${errors.ProposedBenefit ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.ProposedBenefit?.message}`}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="card bg-white w-full mb-5 shadow-md">
+              <div className="flex align-items-center align-self-center px-5 py-4 border-bottom-1 border-gray-200 gap-3 cardHeader">
+                <h2 className="text-title text-lg font-bold m-0">
+                  {t("standard.document")}
+                </h2>
+              </div>
+
+              <DocumentUpload
+                standardDocumentType={standardDocumentType}
+                standardId={standardId}
+                fileChange={handleFiles}
+              ></DocumentUpload>
+            </div>
+          </div>
+        </form>
+      </>
+    );
+  }
+);
+export default BasicDetails;
