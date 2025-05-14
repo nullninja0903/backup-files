@@ -1,0 +1,1508 @@
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useTranslation } from "react-i18next";
+import { Dropdown } from "primereact/dropdown";
+import { RadioButton } from "primereact/radiobutton";
+import { InputText } from "primereact/inputtext";
+import { Controller, useForm } from "react-hook-form";
+import { InputTextarea } from "primereact/inputtextarea";
+import { useLanguageContext } from "../../LanguageContext";
+import FeatherIcon from "../../common/FeatherIconComponent";
+import { MultiSelect } from "primereact/multiselect";
+import {
+  getDefaultBasicFormValue,
+  createStandardRecorBasicDetails,
+  getProposedDocumentName,
+  getReferenceDocumentName,
+  getOtherDocumentName,
+  getStaffNoteDocumentName,
+  removeNullableNotes,
+} from "./utill/standardUtills";
+import { getYears } from "../../../utils/utils";
+import { useDispatch, useSelector } from "react-redux";
+import {
+  createBasicDetail,
+  setStandarRecorddId,
+  setContributionCommitteeId,
+  setActiveStep,
+  createStaffDetail,
+} from "../../../slices/recordStandard";
+import {
+  fetchData,
+  postData,
+  putData,
+} from "../../../services/Standard/apiServiceStandard";
+import LoadingOverlay from "../../common/LoadingOverlay";
+import { RootState } from "../../../store/store";
+import { setToast } from "../../../slices/toastSlice";
+import DocumentUpload from "./DocumentUpload";
+import { BlobServiceClient } from "@azure/storage-blob";
+import StaffNotes from "./StaffNotes";
+import { Toast } from "primereact/toast";
+interface BasicDetailProps {
+  committeeData?: any;
+  behalfData?: any;
+  memberData?: any;
+  accridiationData?: any;
+  standardData?: any;
+  allDocuments?: any;
+  onNext: (data: Record<string, any>) => void;
+  isEditMode?: boolean;
+  activeTab?:any;
+  subTypeId?:any;
+
+}
+export interface BasicDetailsRef {
+  submit: () => void;
+}
+const BasicDetails = forwardRef<BasicDetailsRef, BasicDetailProps>(
+  (
+    {
+      committeeData,
+      behalfData,
+      memberData,
+      accridiationData,
+      standardData,
+      allDocuments,
+      onNext,
+      isEditMode,
+      activeTab,
+      subTypeId
+    },
+    ref
+  ) => {
+    const [t, i18n] = useTranslation("record");
+    const { selectedLanguage } = useLanguageContext();
+    const performAction = () => {
+      i18n.changeLanguage(selectedLanguage);
+    };
+    React.useEffect(() => {
+      performAction();
+    }, [selectedLanguage]);
+    const createRequestDetail = useSelector(
+      (state: RootState) => state.recordStandard
+    );
+
+    const [standarRecordId, setStandardRecordId] = useState(
+      createRequestDetail.id ? createRequestDetail.id : ""
+    );
+
+    const defaultFormValues = useMemo(() => {
+      return getDefaultBasicFormValue(createRequestDetail?.basicDetail);
+    }, [createRequestDetail?.basicDetail]);
+
+    const {
+      control,
+      setValue,
+      formState: { errors },
+      handleSubmit,
+      reset,
+      watch,
+    } = useForm({
+      defaultValues: defaultFormValues,
+    });
+    const toast = useRef<Toast>(null);
+    const [behalfName, setBehalfName] = useState<string>("");
+    const isAccredited = watch("Accredited");
+    const isJointed = watch("IsStandardJointlyDeveloped");
+    const [loading, setLoading] = useState(false);
+    const [ProposalDocuments, setProposalDocuments] = useState([]);
+    const [ReferenceDocuments, setReferenceDocument] = useState([]);
+    const [AdditionalDocuments, setAdditionalDocument] = useState([]);
+    const [checkProposeDocument, setCheckProposeDocument] = useState(true);
+    const [editionData, setEditionData] = useState([]);
+    const [notes, setNotes] = useState([
+      {
+        id: Date.now(),
+        Notes: "",
+        Document: null,
+        DocumentName: "",
+        BlobURL: "",
+        RecordDocumentId: "",
+        IsNew: false,
+      },
+    ]); // Tracks all note fields
+
+    useEffect(() => {
+      if (createRequestDetail.staffNotes.length) {
+        const processedData = createRequestDetail.staffNotes.map(
+          (item: any) => ({
+            id: Date.now(), // Use unique ID for each note
+            Notes: item.Notes || "", // Default to an empty string
+            Document: item.Document || null, // Default to null
+            DocumentName: item.DocumentName || "",
+            BlobURL: item.BlobURL || "",
+            RecordDocumentId: item.RecordId || "", // Fallback if missing
+            IsNew: false, // Use false if IsNew is missing
+            sassToken: item.sassToken,
+          })
+        );
+        // Update the state with the processed data
+        setNotes(processedData);
+      }
+    }, [createRequestDetail.staffNotes]);
+    useEffect(() => {
+      if (createRequestDetail?.basicDetail?.STDREVStandardID && isEditMode) {
+        handleStandard(createRequestDetail?.basicDetail?.STDREVStandardID)
+      }
+    }, [createRequestDetail?.basicDetail?.STDREVStandardID]);
+    const dispatch = useDispatch();
+
+    const initializeBlobService = async (documentResponse: any) => {
+      const connectionString = `https://${documentResponse?.storageAccountName}.blob.core.windows.net?${documentResponse?.sasToken}`;
+
+      const blobServiceClient = new BlobServiceClient(connectionString);
+      return blobServiceClient;
+    };
+
+    const uploadFile = async (
+      files: any,
+      documentType: any,
+      documentTypeId: any,
+      recordId: any
+    ) => {
+      if (files && files.length > 0) {
+        try {
+          const getTokeInfo = await fetchData(
+            `RecordDocument/GetRecordDocumentValetKey?RecordId=${recordId}&userDocumentType=${documentType}`,
+            {}
+          );
+          const blobClient = await initializeBlobService(getTokeInfo);
+          const documentArray = [];
+          let userDocumentData: any;
+          for (let i = 0; i < files.length; i++) {
+            const fileName = files[i];
+            const fileBlob = new Blob([fileName], {
+              type: "application/octet-stream",
+            });
+            const containerName = getTokeInfo.containerName;
+            const sub = containerName.substring(0, containerName.length - 1);
+            const containerClient = blobClient?.getContainerClient(sub);
+            const currentTime = Date.now();
+            const blobName = `${currentTime}_${fileName.name}`;
+            const blockBlobClient =
+              containerClient.getBlockBlobClient(blobName);
+            const uploadBlobResponse = await blockBlobClient.uploadBrowserData(
+              fileBlob,
+              {
+                blockSize: 4 * 1024 * 1024,
+                concurrency: 20,
+              }
+            );
+            const url = uploadBlobResponse._response.request.url;
+            const parts = url.split("?");
+            const modifiedBlobUrl = parts[0];
+            if (modifiedBlobUrl) {
+              // Create document data object for the current file
+              userDocumentData = {
+                isDirty: true,
+                isNew: true,
+                isActive: true,
+                isDeleted: false,
+                recordId: recordId,
+                documentName: fileName.name,
+                documentTypeId: documentTypeId,
+                blobURL: modifiedBlobUrl,
+                recordDocumentId: "00000000-0000-0000-0000-000000000000",
+              };
+              documentArray.push(userDocumentData); // Add to the array
+            }
+          }
+          await postData("RecordDocument/BulkUpload", documentArray);
+        } catch (error: any) {
+          console.error(error.message);
+        }
+      }
+    };
+
+    const uploadStaffNotes = async (recordId: any) => {
+      const { documentType, documentTypeId } =
+        getStaffNoteDocumentName(allDocuments);
+      const notesData = removeNullableNotes(notes);
+
+      try {
+        if (notesData.length > 0) {
+          const getTokeInfo = await fetchData(
+            `RecordDocument/GetRecordDocumentValetKey?RecordId=${recordId}&userDocumentType=${documentType}`,
+            {}
+          );
+          const blobClient = await initializeBlobService(getTokeInfo);
+          const containerName = getTokeInfo.containerName;
+          const sassToken = getTokeInfo.sasToken;
+          const sub = containerName.substring(0, containerName.length - 1);
+          const containerClient = blobClient?.getContainerClient(sub);
+          const staffSubmitData: {
+            BlobURL: string;
+            Notes: any;
+            DocumentName: any;
+            DocumentTypeId: any;
+            RecordId: any;
+            IsNew: any;
+            sassToken: any;
+          }[] = [];
+          for (let i = 0; i < notesData.length; i++) {
+            let newNotes = {
+              Notes: notesData[i].Notes,
+              RecordId: recordId,
+              DocumentTypeId: documentTypeId,
+              DocumentName: notesData[i].DocumentName,
+              IsNew: false,
+              BlobURL: "",
+              sassToken: sassToken,
+            };
+            newNotes.IsNew = true;
+            if (notesData[i].Document && notesData[i].Document.length > 0) {
+              const currentTime = Date.now();
+              const blobName = `${currentTime}_${notesData[i].Document[0].name}`;
+              const blockBlobClient =
+                containerClient.getBlockBlobClient(blobName);
+              const fileBlob = new Blob([notesData[i].Document[0]], {
+                type: "application/octet-stream",
+              });
+              const uploadBlobResponse =
+                await blockBlobClient.uploadBrowserData(fileBlob, {
+                  blockSize: 4 * 1024 * 1024,
+                  concurrency: 20,
+                });
+              const url = uploadBlobResponse._response.request.url;
+              const parts = url.split("?");
+              const modifiedBlobUrl = parts[0];
+              newNotes.BlobURL = modifiedBlobUrl;
+              newNotes.DocumentName = notesData[i].Document[0].name;
+            } else {
+              newNotes.BlobURL = notesData[i].BlobURL;
+              newNotes.IsNew = false;
+            }
+            staffSubmitData.push(newNotes);
+          }
+          let createStandard = await putData(
+            "StandardRecordStaffNote/AddUpdateNotesForBasicDetail",
+            recordId,
+            staffSubmitData
+          );
+          dispatch(createStaffDetail(staffSubmitData));
+        }
+      } catch (error: any) {
+        console.error(error.message);
+      }
+    };
+
+    const onSubmit = async (data: Record<string, any>) => {
+      if (behalfName === "Member") {
+        if (data.CommitteeId) {
+          delete data.CommitteeId;
+        }
+      } else if (behalfName === "Committee") {
+        if (data.UserProfileID) {
+          delete data.UserProfileID;
+        }
+      } else {
+        if (data.CommitteeId) {
+          delete data.CommitteeId;
+        }
+        if (data.UserProfileID) {
+          delete data.UserProfileID;
+        }
+      }
+      const requestBody = createStandardRecorBasicDetails(data);
+      requestBody.RecordSubTypeId = subTypeId;
+      setLoading(true);
+      let recordId;
+      try {
+        if (standarRecordId) {
+          recordId = standarRecordId;
+          let createStandard = await putData(
+            "StandardRecord/UpdateStandardRecordBasicDetails",
+            createRequestDetail.id,
+            requestBody
+          );
+          dispatch(setStandarRecorddId(createRequestDetail.id));
+          dispatch(createBasicDetail(data));
+        } else {
+          const createStandard = await postData(
+            "StandardRecord/AddStandardRecord",
+            requestBody
+          );
+          recordId = createStandard.id;
+          data.RecordNumber = createStandard.recordNumber;
+          data.RecordStatusId = createStandard.recordStatusId;
+          data.RecordTypeId = createStandard.recordTypeId;
+          dispatch(createBasicDetail(data));
+          setStandardRecordId(createStandard.id);
+          dispatch(setStandarRecorddId(createStandard.id));
+        }
+
+        let promiseData = [];
+        if (ProposalDocuments.length > 0) {
+          let documentInfo = getProposedDocumentName(allDocuments);
+          promiseData.push(
+            uploadFile(
+              ProposalDocuments,
+              documentInfo.documentType,
+              documentInfo.documentTypeId,
+              recordId
+            )
+          );
+        }
+
+        if (ReferenceDocuments.length > 0) {
+          let documentInfo = getReferenceDocumentName(allDocuments);
+          promiseData.push(
+            uploadFile(
+              ReferenceDocuments,
+              documentInfo.documentType,
+              documentInfo.documentTypeId,
+              recordId
+            )
+          );
+        }
+
+        if (AdditionalDocuments.length > 0) {
+          let documentInfo = getOtherDocumentName(allDocuments);
+          promiseData.push(
+            uploadFile(
+              AdditionalDocuments,
+              documentInfo.documentType,
+              documentInfo.documentTypeId,
+              recordId
+            )
+          );
+        }
+        promiseData.push(uploadStaffNotes(recordId));
+        await Promise.all(promiseData);
+        dispatch(setActiveStep(1));
+        dispatch(
+          setToast({
+            message: createRequestDetail.id
+              ? t("record.standardBasicUpdate")
+              : t("record.standardBasicUpdate"),
+            severity: "success",
+          })
+        );
+
+        onNext(data);
+      } catch (error: any) {
+        console.error(error.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    useImperativeHandle(ref, () => ({
+      submit: () => {
+        handleSubmit(onSubmit)();
+      },
+    }));
+
+    const updateFormFields = (
+      fields: any,
+      sourceObject: any,
+      setValue: (arg0: any, arg1: any) => void
+    ) => {
+      Object.keys(fields).forEach((formKey) => {
+        const sourceKey = fields[formKey];
+        if (sourceKey in sourceObject) {
+          if (formKey === "Accredited") {
+            setValue(formKey, sourceObject["IsAccreditated"] ? "Yes" : "No");
+          } else if (formKey === "IsStandardJointlyDeveloped") {
+            setValue(
+              formKey,
+              sourceObject["IsJointlyDeveloped"] ? "Yes" : "No"
+            );
+          } else if (formKey === "ReadyForBalloting") {
+            setValue(
+              formKey,
+              sourceObject["ReadyForBalloting"] ? "Yes" : "No"
+            );
+          } else {
+            setValue(formKey, sourceObject[sourceKey] || "");
+          }
+        } else {
+          setValue(formKey, ""); // Set empty if the source key is not found
+        }
+      });
+    };
+   
+
+    // const getRecordSubType = async () => {
+    //   try {
+    //     const RecordTypeResponse = await fetchData("RecordType/GetAll", {});
+    //     const getStandardId = RecordTypeResponse?.Collection.find((el: any) => el.TypeName === "Standard")?.Id
+    //     if (!getStandardId) {
+    //       return ""
+    //     }
+    //     const getRecordSubTypeResponse = await fetchData(`RecordSubType/GetListByParentId?parentId=${getStandardId}`, {});
+    //     const getSubTypeId = getRecordSubTypeResponse?.Collection.find((el: any) => el.Type === "NewEdition")?.Id
+    //     return getSubTypeId;
+    //   } catch (error: any) {
+    //     console.error(error.message);
+    //   }
+    // };
+
+    const handleStandard = async (value: any) => {
+      try {
+        setLoading(true);
+        const filters = [];
+        const queryParams: { [key: string]: any } = {};
+        filters.push({ Key: "StandardId", Value: value });
+        filters.forEach((filter, index) => {
+          queryParams[`Filters[${index}].Key`] = filter.Key;
+          queryParams[`Filters[${index}].Value`] = filter.Value;
+        });
+        queryParams["PageIndex"] = -1;
+        const results = await Promise.allSettled([
+          fetchData(`Standard/BasicDetails/${value}`, {}),
+          fetchData(`Standard/GetOtherConfiguration/${value}`, {}),
+          fetchData(`Standard/GetContributingCommittee/${value}`, {}),
+          fetchData(
+            `StandardEdition/GridSearch?${new URLSearchParams(queryParams).toString()}`
+          )
+        ]);
+
+        const basicStandard =
+          results[0].status === "fulfilled" ? results[0].value : {};
+        const otherStandardInfo =
+          results[1].status === "fulfilled" ? results[1].value : {};
+        const contributingCommittees =
+          results[2].status === "fulfilled" ? results[2].value : [];
+
+        const editionData =
+          results[3].status === "fulfilled" ? results[3].value : [];
+
+        const editionValues = editionData.Collection.map((element: any) => {
+          return {
+            ...element,
+            Name: `${element.Title} (${element.Year})`,
+          };
+        });
+        setEditionData(editionValues);
+
+        dispatch(setContributionCommitteeId(contributingCommittees));
+
+        updateFormFields(
+          {
+            STDREVApplicableAccreditationBodyId: "AccreditationBodyId",
+            STDREVPublishedYear: "NextPublishingYear",
+            STDREVJointlyDevelopedWithInternalCommittees:
+              "JointlyDevelopedwithInternalCommitteeIds",
+            STDREVJointlyDevelopedWithExternalCommittees:
+              "JointlyDevelopedwithExternalCommittees",
+            STDREVPrimaryResponsibleCommitteeId:
+              "PrimaryResponsibleCommitteeId",
+            MeetingId: "MeetingNumber",
+            Accredited: "IsAccreditated",
+            IsStandardJointlyDeveloped: "IsJointlyDeveloped",
+          },
+          {
+            AccreditationBodyId: otherStandardInfo.AccreditationBodyId,
+            NextPublishingYear: basicStandard.NextPublishingYear,
+            JointlyDevelopedwithInternalCommitteeIds:
+              otherStandardInfo.JointlyDevelopedwithInternalCommitteeIds,
+            JointlyDevelopedwithExternalCommittees:
+              otherStandardInfo.JointlyDevelopedwithExternalCommittees,
+            PrimaryResponsibleCommitteeId:
+              otherStandardInfo.PrimaryResponsibleCommitteeId,
+            MeetingNumber: basicStandard.MeetingNumber,
+            IsAccreditated: otherStandardInfo.IsAccreditated,
+            IsJointlyDeveloped: otherStandardInfo.IsJointlyDeveloped
+          },
+          setValue
+        );
+        if (isEditMode) {
+          setValue('STDEditionId', createRequestDetail?.basicDetail?.STDEdition?.Id || "")
+        }
+        if(activeTab === "newStandard" && editionValues?.length > 0){
+          console.log(editionValues,"editionValues")
+          setValue('STDEditionId',  editionValues[0]?.Id || "")
+        }
+        setLoading(false);
+      } catch (error) {
+        console.error("Error fetching user permissions:", error);
+      }
+    };
+
+    useEffect(() => {
+      if (createRequestDetail.basicDetail.STDBehalfOfId) {
+        let behalfName =
+          behalfData.find(
+            (element: any) =>
+              element.Id === createRequestDetail.basicDetail.STDBehalfOfId
+          )?.DisplayName || "";
+
+        setBehalfName(behalfName);
+      }
+    }, [createRequestDetail?.basicDetail?.STDBehalfOfId, behalfData]);
+
+    const handleRequired = useCallback(
+      (flag: boolean) => {
+        setCheckProposeDocument(flag);
+      },
+      [setCheckProposeDocument]
+    );
+
+    const addNoteField = useCallback(() => {
+      setNotes((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          Notes: "",
+          Document: null,
+          DocumentName: "",
+          RecordDocumentId: "",
+          BlobURL: "",
+          IsNew: true,
+        },
+      ]);
+    }, [setNotes]);
+
+    const updateNoteField = useCallback(
+      (id: number, field: string, value: any) => {
+        setNotes((prev) =>
+          prev.map((note) =>
+            note.id === id ? { ...note, [field]: value } : note
+          )
+        );
+      },
+      [setNotes]
+    );
+
+    const removeNoteField = useCallback(
+      (id: any) => {
+        setNotes((prev) => prev.filter((note) => note.id !== id));
+      },
+      [setNotes]
+    );
+
+    const checkMembership = async (memberId: string) => {
+      setLoading(true)
+      try {
+        const response = await fetchData(
+          `UserProfileUserFeaturePosition/CheckUserHasAnyActiveGlobalPosition/${memberId}`
+        );
+        if (response) {
+          toast.current?.show({
+            severity: "error",
+            summary: "Error",
+            detail: t("record.activeMembershipMessage"),
+            life: 3000,
+          });
+        }
+        return response;
+      } catch (error) {
+        console.error("Error fetching membership:", error);
+      } finally {
+        setLoading(false)
+      }
+    };
+    return (
+      <>
+        {loading && <LoadingOverlay visible={loading} />}
+        <Toast ref={toast} />
+        <form>
+          <div>
+            <div className="card bg-white w-full mb-5 shadow-md">
+              <div className="flex align-items-center align-self-center px-5 py-4 border-bottom-1 border-gray-200 gap-3 cardHeader">
+                <h2 className="text-title text-lg font-bold m-0">
+                  {t("record.basicDetails")}
+                </h2>
+              </div>
+
+              <div className="p-5 cardBody">
+                <div className="flex flex-column gap-3">
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="onBehalfOf"
+                        className={`block font-bold text-capitalize text-input-label"}`}
+                      >
+                        {t("record.onBehalfOf")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="STDBehalfOfId"
+                        control={control}
+                        rules={{
+                          required: `${t("record.onBehalfOf")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <Dropdown
+                            inputId="STDBehalfOfId"
+                            {...field}
+                            value={field.value}
+                            options={behalfData}
+                            optionLabel="DisplayName"
+                            optionValue="Id"
+                            placeholder={t("record.selectAnOption")}
+                            className={`w-full`}
+                            onChange={(e) => {
+                              const behaf = behalfData.find(
+                                (element: any) => element.Id === e.value
+                              );
+                              setBehalfName(behaf.DisplayName);
+                              field.onChange(e.value);
+                            }}
+                          />
+                        )}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    {behalfName === "Member" && (
+                      <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                        <label
+                          htmlFor="UserProfileId"
+                          className={`block font-bold text-capitalize text-input-label"}`}
+                        >
+                          {t("record.memberName")} <span className="text-red-500 align-top">*</span>
+                        </label>
+                        <Controller
+                          name="UserProfileId"
+                          control={control}
+                          rules={{
+                            required: `${t("record.memberName")} ${t("record.isRequired")}`,
+                          }}
+                          render={({ field }) => (
+                            <Dropdown
+                              filter
+                              inputId="UserProfileId"
+                              {...field}
+                              value={field.value}
+                              options={memberData}
+                              optionLabel="DisplayName"
+                              optionValue="Id"
+                              placeholder={t("record.selectAnOption")}
+                              className={`w-full`}
+                              onChange={async (e) => {
+                                const getPermission = await checkMembership(e.value)
+                                if (!getPermission) {
+                                  field.onChange(e.value);
+                                }
+                              }}
+                            />
+                          )}
+                        />
+                        <span
+                          id="primaryCommitteeError"
+                          className={`p-error font-bold text-capitalize ${errors.UserProfileId ? "" : "error-hidden"}`}
+                        >
+                          {`${errors.UserProfileId?.message}`}
+                        </span>
+                      </div>
+                    )}
+
+                    {behalfName === "Committee" && (
+                      <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                        <label
+                          htmlFor="CommitteeId"
+                          className={`block font-bold text-capitalize text-input-label"}`}
+                        >
+                          {t("record.committeeName")} <span className="text-red-500 align-top">*</span>
+                        </label>
+                        <Controller
+                          name="CommitteeId"
+                          control={control}
+                          rules={{
+                            required: `${t("record.committeeName")} ${t("record.isRequired")}`,
+                          }}
+                          render={({ field }) => (
+                            <Dropdown
+                              filter
+                              inputId="CommitteeId"
+                              {...field}
+                              value={field.value}
+                              options={committeeData}
+                              optionLabel="Name"
+                              optionValue="Id"
+                              placeholder={t("record.selectAnOption")}
+                              className={`w-full`}
+                              onChange={(e) => {
+                                field.onChange(e.value);
+                              }}
+                            />
+                          )}
+                        />
+
+                        <span
+                          id="primaryCommitteeError"
+                          className={`p-error font-bold text-capitalize ${errors.CommitteeId ? "" : "error-hidden"}`}
+                        >
+                          {`${errors.CommitteeId?.message}`}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="Remark"
+                        className={`block font-bold text-capitalize ${errors.Remark ? " p-error" : "text-input-label"}`}
+                      >
+                        {t("record.remark")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="Remark"
+                        control={control}
+                        rules={{
+                          required: `${t("record.remark")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputTextarea
+                            id="Remark"
+                            aria-describedby="remarkError"
+                            {...field}
+                            maxLength={500}
+                            rows={5}
+                            cols={30}
+                            placeholder={t("record.remark")}
+                            className={`w-full ${errors.Remark ? "p-invalid" : ""}`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="remarkError"
+                        className={`p-error font-bold text-capitalize ${errors.Remark ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.Remark?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className={`flex flex-column gap-2  col-12 ${activeTab === "newStandard" ? "xl:col-6 lg:col-8 " : "xl:col-3 lg:col-4  md:col-6" }`}>
+                      <label
+                        htmlFor="StdrevSectionAffected"
+                        className={`block font-bold text-capitalize text-input-label"}`}
+                      >
+                        {t("record.standardAffected")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="STDREVStandardID"
+                        control={control}
+                        rules={{
+                          required: `${t("record.standardAffected")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <Dropdown
+                            filter
+                            inputId="STDREVStandardID"
+                            {...field}
+                            value={field.value}
+                            options={standardData}
+                            optionLabel="Name"
+                            optionValue="Id"
+                            placeholder={t("record.selectAnOption")}
+                            className={`w-full`}
+                            onChange={(e) => {
+                              field.onChange(e.value);
+                              handleStandard(e.value);
+                            }}
+                          />
+                        )}
+                      />
+
+                      <span
+                        id="StdrevStandardID"
+                        className={`p-error font-bold text-capitalize ${errors.STDREVStandardID ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.STDREVStandardID?.message}`}
+                      </span>
+                    </div>
+                    {activeTab !== "newStandard" && (
+                      <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                        <label
+                          htmlFor="StdrevPublishedYear"
+                          className={`block font-bold text-capitalize text-input-label"}`}
+                        >
+                          {t("record.edition")} <span className="text-red-500 align-top">*</span>
+                        </label>
+                        <Controller
+                          name="STDEditionId"
+                          control={control}
+                          rules={{
+                            required: `${t("record.edition")} ${t("record.isRequired")}`,
+                          }}
+                          render={({ field }) => (
+                            <Dropdown
+                              inputId="STDEditionId"
+                              {...field}
+                              value={field.value}
+                              options={editionData}
+                              optionLabel="Name"
+                              optionValue="Id"
+                              placeholder={t("record.selectAnOption")}
+                              className={`w-full`}
+                              onChange={(e) => {
+                                field.onChange(e.value);
+                              }}
+                            />
+                          )}
+                        />
+                        <span
+                          id="STDREVPublishedYear"
+                          className={`p-error font-bold text-capitalize ${errors.STDEditionId ? "" : "error-hidden"}`}
+                        >
+                          {`${errors.STDEditionId?.message}`}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-xl">
+                    <div className="flex flex-column gap-3">
+                      <fieldset className="border-none p-0">
+                        <legend className="block font-bold text-input-label p-0 mb-3">
+                          {t("record.accredited")}?
+                        </legend>
+                        <div className="flex flex-wrap gap-3">
+                          <div className="flex align-items-center">
+                            <Controller
+                              name="Accredited"
+                              control={control}
+                              render={({ field }) => (
+                                <>
+                                  <RadioButton
+                                    inputId="Accredited1"
+                                    name="Accredited"
+                                    disabled
+                                    value="Yes"
+                                    checked={field.value === "Yes"}
+                                    onChange={(e) => {
+                                      field.onChange(e.value);
+                                    }} // Bind to react-hook-form
+                                  />
+                                  <label htmlFor="Accredited1" className="ml-2">
+                                    {t("record.yes")}
+                                  </label>
+                                </>
+                              )}
+                            />
+                          </div>
+                          <div className="flex align-items-center">
+                            <Controller
+                              name="Accredited"
+                              control={control}
+                              render={({ field }) => (
+                                <>
+                                  <RadioButton
+                                    inputId="Accredited2"
+                                    name="Accredited"
+                                    value="No"
+                                    disabled
+                                    checked={field.value === "No"}
+                                    onChange={(e) => {
+                                      field.onChange(e.value);
+                                    }}
+                                  />
+                                  <label htmlFor="Accredited2" className="ml-2">
+                                    {t("record.no")}
+                                  </label>
+                                </>
+                              )}
+                            />
+                          </div>
+                        </div>
+                      </fieldset>
+                    </div>
+                  </div>
+
+                  {isAccredited === "Yes" && (
+                    <div className="grid grid-xl align-items-end">
+                      <div className="flex flex-column gap-2 xl:col-3 lg:col-4 md:col-6 col-12">
+                        <label
+                          htmlFor="AccreditationBodyId"
+                          className={`block font-bold text-capitalize ${errors.STDREVApplicableAccreditationBodyId ? " p-error" : "text-input-label"}`}
+                        >
+                          {t("record.applicableAccreditationBody")} <span className="text-red-500 align-top">*</span>
+                        </label>
+                        <Controller
+                          name="STDREVApplicableAccreditationBodyId"
+                          control={control}
+                          rules={{
+                            required: `${t("record.applicableAccreditationBody")} ${t("record.isRequired")}`,
+                          }}
+                          render={({ field }) => (
+                            <Dropdown
+                              inputId="STDREVApplicableAccreditationBodyId"
+                              aria-describedby="applicableAccreditationBodyError"
+                              {...field}
+                              value={field.value}
+                              options={accridiationData}
+                              disabled
+                              optionLabel="Name"
+                              optionValue="Id"
+                              placeholder={t("record.selectAnOption")}
+                              className={`w-full ${errors.STDREVApplicableAccreditationBodyId ? "p-invalid" : ""}`}
+                              onChange={(e) => {
+                                field.onChange(e.value);
+                              }}
+                            />
+                          )}
+                        />
+                        <span
+                          id="applicableAccreditationBodyError"
+                          className={`p-error font-bold text-capitalize ${errors.STDREVApplicableAccreditationBodyId ? "" : "error-hidden"}`}
+                        >
+                          {`${errors.STDREVApplicableAccreditationBodyId?.message}`}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-xl">
+                    <div className="flex flex-column gap-3">
+                      <fieldset className="border-none p-0">
+                        <legend className="block font-bold text-input-label p-0 mb-3">
+                          {t("record.isStandardJointlyDeveloped")}?
+                        </legend>
+                        <div className="flex flex-wrap gap-3">
+                          <div className="flex align-items-center">
+                            <Controller
+                              name="IsStandardJointlyDeveloped"
+                              control={control}
+                              render={({ field }) => (
+                                <>
+                                  <RadioButton
+                                    inputId="IsStandardJointlyDeveloped1"
+                                    name="IsStandardJointlyDeveloped"
+                                    value="Yes"
+                                    disabled
+                                    checked={field.value === "Yes"}
+                                    onChange={(e) => {
+                                      field.onChange(e.value);
+                                    }} // Bind to react-hook-form
+                                  />
+                                  <label
+                                    htmlFor="IsStandardJointlyDeveloped1"
+                                    className="ml-2"
+                                  >
+                                    {t("record.yes")}
+                                  </label>
+                                </>
+                              )}
+                            />
+                          </div>
+                          <div className="flex align-items-center">
+                            <Controller
+                              name="IsStandardJointlyDeveloped"
+                              control={control}
+                              render={({ field }) => (
+                                <>
+                                  <RadioButton
+                                    inputId="IsStandardJointlyDeveloped2"
+                                    name="IsStandardJointlyDeveloped"
+                                    value="No"
+                                    disabled
+                                    checked={field.value === "No"}
+                                    onChange={(e) => {
+                                      field.onChange(e.value);
+                                    }}
+                                  />
+                                  <label
+                                    htmlFor="IsStandardJointlyDeveloped2"
+                                    className="ml-2"
+                                  >
+                                    {t("record.no")}
+                                  </label>
+                                </>
+                              )}
+                            />
+                          </div>
+                        </div>
+                      </fieldset>
+                    </div>
+                  </div>
+
+                  {isJointed === "Yes" && (
+                    <div className="grid grid-xl align-items-end">
+                      <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                        <label
+                          htmlFor="STDREVJointlyDevelopedWithInternalCommittees"
+                          className={`block font-bold text-capitalize text-input-label`}
+                        >
+                          {t("record.withInternalCommittees")}
+                        </label>
+                        <Controller
+                          name="STDREVJointlyDevelopedWithInternalCommittees"
+                          control={control}
+                          render={({ field }) => (
+                            <MultiSelect
+                              filter
+                              inputId="STDREVJointlyDevelopedWithInternalCommittees"
+                              aria-describedby="withInternalCommitteesError"
+                              {...field}
+                              value={field.value}
+                              options={committeeData}
+                              disabled
+                              optionValue="Id"
+                              optionLabel="Name"
+                              placeholder={t("record.select")}
+                              className={`w-full ${errors.STDREVJointlyDevelopedWithInternalCommittees ? "p-invalid" : ""}`}
+                              onChange={(e) => {
+                                field.onChange(e.value);
+                              }}
+                            />
+                          )}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="STDREVJointlyDevelopedWithExternalCommittees"
+                        className={`block font-bold text-capitalize text-input-label`}
+                      >
+                        {t("record.withExternalCommittees")}
+                      </label>
+                      <Controller
+                        name="STDREVJointlyDevelopedWithExternalCommittees"
+                        control={control}
+                        render={({ field }) => (
+                          <InputText
+                            id="STDREVJointlyDevelopedWithExternalCommittees"
+                            {...field}
+                            placeholder={t("record.withExternalCommittees")}
+                            disabled
+                            className={`w-full`}
+                          />
+                        )}
+                      />
+                    </div>
+                  </div>
+                  {/* Ready For Ballot */}
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <Controller
+                        name="ReadyForBalloting"
+                        control={control}
+                        render={({ field }) => (
+                          <fieldset className="border-none p-0">
+                            <legend className="block font-bold text-input-label p-0 mb-3">
+                              {t("record.readyForBallotingLabel")}
+                            </legend>
+                            <div className="flex flex-wrap gap-3">
+                              <div className="flex align-items-center">
+                                <RadioButton
+                                  inputId="ReadyForBalloting1"
+                                  name={field.name}
+                                  value="Yes"
+                                  checked={field.value === "Yes"}
+                                  onChange={(e) => field.onChange(e.value)}
+                                />
+                                <label htmlFor="ReadyForBalloting1" className="ml-2">
+                                  {t("record.yes")}
+                                </label>
+                              </div>
+                              <div className="flex align-items-center">
+                                <RadioButton
+                                  inputId="ReadyForBalloting2"
+                                  name={field.name}
+                                  value="No"
+                                  checked={field.value === "No"}
+                                  onChange={(e) => field.onChange(e.value)}
+                                />
+                                <label htmlFor="ReadyForBalloting2" className="ml-2">
+                                  {t("record.no")}
+                                </label>
+                              </div>
+                            </div>
+                          </fieldset>
+                        )}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="STDREVPrimaryResponsibleCommitteeId"
+                        className={`block font-bold text-capitalize text-input-label"}`}
+                      >
+                        {t("record.primaryResponsibleCommittee")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="STDREVPrimaryResponsibleCommitteeId"
+                        control={control}
+                        rules={{
+                          required: `${t("record.primaryResponsibleCommittee")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <Dropdown
+                            filter
+                            inputId="STDREVPrimaryResponsibleCommitteeId"
+                            aria-describedby="primaryCommitteeError"
+                            {...field}
+                            value={field.value}
+                            options={committeeData}
+                            optionLabel="Name"
+                            optionValue="Id"
+                            placeholder={t("record.select")}
+                            disabled
+                            className={`w-full`}
+                            onChange={(e) => {
+                              field.onChange(e.value);
+                            }}
+                          />
+                        )}
+                      />
+                      <span
+                        id="primaryCommitteeError"
+                        className={`p-error font-bold text-capitalize ${errors.STDREVPrimaryResponsibleCommitteeId ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.STDREVPrimaryResponsibleCommitteeId?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="STDREVTitleOfProposedRevision"
+                        className={`block font-bold text-capitalize ${errors.STDREVTitleOfProposedRevision
+                          ? "p-error"
+                          : "text-input-label"
+                          }`}
+                      >
+                        {t("record.titleProposedRevision")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="STDREVTitleOfProposedRevision"
+                        control={control}
+                        rules={{
+                          required: `${t("record.titleProposedRevision")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputText
+                            id="STDREVTitleOfProposedRevision"
+                            aria-describedby="titleProposedStandardError"
+                            {...field}
+                            maxLength={20}
+                            placeholder={t("record.titleProposedStandard")}
+                            className={`w-full ${errors.STDREVTitleOfProposedRevision
+                              ? "p-invalid"
+                              : ""
+                              }`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="titleProposedStandardError"
+                        className={`p-error font-bold text-capitalize ${errors.STDREVTitleOfProposedRevision
+                          ? ""
+                          : "error-hidden"
+                          }`}
+                      >
+                        {`${errors.STDREVTitleOfProposedRevision?.message}`}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="StdrevExplanationOfProposal"
+                        className={`block font-bold text-capitalize ${errors.STDREVExplanationOfProposal ? " p-error" : "text-input-label"}`}
+                      >
+                        {t("record.explainationProposal")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="STDREVExplanationOfProposal"
+                        control={control}
+                        rules={{
+                          required: `${t("record.explainationProposal")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputTextarea
+                            id="STDREVExplanationOfProposal"
+                            aria-describedby="ExplainationProposalError"
+                            {...field}
+                            rows={5}
+                            cols={30}
+                            maxLength={500}
+                            placeholder={t("record.explainationProposal")}
+                            className={`w-full ${errors.STDREVExplanationOfProposal ? "p-invalid" : ""}`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="explainationProposalError"
+                        className={`p-error font-bold text-capitalize ${errors.STDREVExplanationOfProposal ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.STDREVExplanationOfProposal?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="STDAbstract"
+                        className={`block font-bold text-capitalize ${errors.STDAbstract ? " p-error" : "text-input-label"}`}
+                      >
+                        {t("record.productAbstract")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="STDAbstract"
+                        control={control}
+                        rules={{
+                          required: `${t("record.productAbstract")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputTextarea
+                            id="STDAbstract"
+                            aria-describedby="ProductAbstractError"
+                            {...field}
+                            rows={5}
+                            cols={30}
+                            maxLength={500}
+                            placeholder={t("record.productAbstract")}
+                            className={`w-full ${errors.STDAbstract ? "p-invalid" : ""}`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="productAbstractError"
+                        className={`p-error font-bold text-capitalize ${errors.STDAbstract ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.STDAbstract?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="SectionAffected"
+                        className={`block font-bold text-capitalize text-input-label"}`}
+                      >
+                        {t("record.sectionAffected")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="STDREVSectionAffected"
+                        control={control}
+                        rules={{
+                          required: `${t("record.sectionAffected")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputText
+                            id="STDREVSectionAffected"
+                            aria-describedby="SectionAffectedError"
+                            {...field}
+                            placeholder={t("record.titleProposedStandard")}
+                            className={`w-full ${errors.STDREVSectionAffected ? "p-invalid" : ""
+                              }`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="SectionAffectedError"
+                        className={`p-error font-bold text-capitalize ${errors.STDREVSectionAffected ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.STDREVSectionAffected?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="OtherStandardAffected"
+                        className={`block font-bold text-capitalize text-input-label"}`}
+                      >
+                        {t("record.otherStandardAffected")}
+                      </label>
+                      <Controller
+                        name="STDREVOtherStandardsAffected"
+                        control={control}
+                        render={({ field }) => (
+                          <MultiSelect
+                            filter
+                            inputId="STDREVOtherStandardsAffected"
+                            aria-describedby="OtherStandardAffectedError"
+                            {...field}
+                            value={field.value}
+                            options={standardData}
+                            optionLabel="Name"
+                            optionValue="Id"
+                            placeholder={t("record.select")}
+                            className={`w-full`}
+                            onChange={(e) => {
+                              field.onChange(e.value);
+                            }}
+                          />
+                        )}
+                      />
+                      <span
+                        id="otherStandardAffectedError"
+                        className={`p-error font-bold text-capitalize ${errors.STDREVOtherStandardsAffected ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.STDREVOtherStandardsAffected?.message}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-xl align-items-end">
+                    <div className="flex flex-column gap-2 xl:col-6 lg:col-8 col-12">
+                      <label
+                        htmlFor="StdAdditionalRemark"
+                        className={`block font-bold text-capitalize ${errors.STDAdditionalRemark ? " p-error" : "text-input-label"}`}
+                      >
+                        {t("record.additionalRemarkReference")} <span className="text-red-500 align-top">*</span>
+                      </label>
+                      <Controller
+                        name="STDAdditionalRemark"
+                        control={control}
+                        rules={{
+                          required: `${t("record.additionalRemarkReference")} ${t("record.isRequired")}`,
+                        }}
+                        render={({ field }) => (
+                          <InputTextarea
+                            id="STDAdditionalRemark"
+                            aria-describedby="AdditionalRemarkReferenceError"
+                            {...field}
+                            rows={5}
+                            cols={30}
+                            maxLength={500}
+                            placeholder={t("record.additionalRemarkReference")}
+                            className={`w-full ${errors.STDAdditionalRemark ? "p-invalid" : ""}`}
+                          />
+                        )}
+                      />
+                      <span
+                        id="additionalRemarkReferenceError"
+                        className={`p-error font-bold text-capitalize ${errors.STDAdditionalRemark ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.STDAdditionalRemark?.message}`}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="card bg-white w-full mb-5 shadow-md">
+              <div className="flex align-items-center align-self-center px-5 py-4 border-bottom-1 border-gray-200 gap-3 cardHeader">
+                <h2 className="text-title text-lg font-bold m-0">
+                  {t("record.addDocument")}
+                </h2>
+              </div>
+
+              <div className="p-5 cardBody">
+                <div className="flex flex-column gap-5">
+                  <div className="flex flex-column gap-2">
+                    <h3 className="text-base font-bold m-0">
+                      {t("record.proposalDocument")} <span className="text-red-500 align-top">*</span>
+                    </h3>
+                    <div>
+                      <DocumentUpload
+                        name="ProposalDocument"
+                        control={control}
+                        StandardRecordId={standarRecordId}
+                        StandardDocumentType="STDProposalDocument"
+                        t={t}
+                        rules={{
+                          required: checkProposeDocument
+                            ? `${t("record.proposalDocument")} ${t("record.isRequired")}`
+                            : false,
+                        }}
+                        fileChange={(files: any) => {
+                          setProposalDocuments(files);
+                        }}
+                        allowRequire={handleRequired}
+                      />
+                      <span
+                        id="ProposalDocumentError"
+                        className={`p-error font-bold text-capitalize ${errors.ProposalDocument ? "" : "error-hidden"}`}
+                      >
+                        {`${errors.ProposalDocument?.message}`}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex flex-column gap-2">
+                    <h3 className="text-base font-bold m-0">
+                      {t("record.referenceDocuments")}
+                    </h3>
+                    <div>
+                      <DocumentUpload
+                        name="ReferenceDocuments"
+                        StandardDocumentType="STDReferenceDocument"
+                        control={control}
+                        t={t}
+                        StandardRecordId={standarRecordId}
+                        fileChange={(files: any) => {
+                          setReferenceDocument(files);
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-column gap-2">
+                    <h3 className="text-base font-bold m-0">
+                      {t("record.additionalDocument")}
+                    </h3>
+                    <div>
+                      <DocumentUpload
+                        name="AdditionalDocuments"
+                        control={control}
+                        StandardRecordId={standarRecordId}
+                        StandardDocumentType="STDAdditionalDocument"
+                        t={t}
+                        fileChange={(files: any) => {
+                          setAdditionalDocument(files);
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {!isEditMode && <div className="card bg-white w-full mb-5 shadow-md">
+              <div className="flex align-items-center align-self-center px-5 py-4 border-bottom-1 border-gray-200 gap-3 cardHeader">
+                <h2 className="text-title text-lg font-bold m-0">
+                  {t("record.staffNotes")}
+                </h2>
+              </div>
+
+              <div className="p-5 cardBody">
+                <div className="flex flex-column gap-3">
+                  {notes.map((note, index) => (
+                    <StaffNotes
+                      key={index}
+                      note={note}
+                      index={index}
+                      t={t}
+                      control={control}
+                      standarRecordId={standarRecordId}
+                      updateNoteField={updateNoteField}
+                      removeNoteField={removeNoteField}
+                      InputTextarea={InputTextarea}
+                    />
+                  ))}
+
+                  {/* Add Button */}
+                  <span
+                    onClick={addNoteField}
+                    className="flex align-items-center gap-2 pl-0 underline"
+                  >
+                    <FeatherIcon name="plus" size={20} />
+                    <span className="font-bold text-capitalize">Add Note</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+            }
+          </div>
+        </form>
+      </>
+    );
+  }
+);
+
+export default BasicDetails;
